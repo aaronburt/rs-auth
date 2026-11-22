@@ -5,6 +5,11 @@ http:
         address: http://rs-auth:9091/api/verify
         trustForwardHeader: true
         authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
+    rs-auth-changed:
+      forwardAuth:
+        address: http://rs-auth-changed:9091/api/verify
+        trustForwardHeader: true
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
 
   routers:
     portal:
@@ -16,6 +21,13 @@ http:
       rule: Host(`whoami.example.test`) || Host(`other.example.test`)
       entryPoints: [websecure]
       middlewares: [rs-auth]
+      service: whoami
+      tls: {}
+
+    changed:
+      rule: Host(`changed.example.test`)
+      entryPoints: [websecure]
+      middlewares: [rs-auth-changed]
       service: whoami
       tls: {}
 

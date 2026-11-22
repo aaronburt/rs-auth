@@ -1,0 +1,73 @@
+# End-to-end test of rs-auth behind Caddy 2.
+#
+#   docker compose -f e2e/caddy/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
+#   docker compose -f e2e/caddy/docker-compose.yml down
+#
+# Caddy serves https from its internal CA. The tester
+# container runs e2e/test.sh against it and exits 0 if every check passes.
+name: rs-auth-e2e-caddy
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  caddy:
+    image: caddy:2.8
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      edge:
+        ipv4_address: 172.30.0.10
+        aliases: [auth.example.test, whoami.example.test, other.example.test, changed.example.test]
+
+  rs-auth:
+    build: ../..
+    environment:
+      RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
+      RUST_LOG: info
+    volumes:
+      - ../config.yaml:/config/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [edge]
+
+  # Stands in for rs-auth restarted after an admin edited the config.
+  rs-auth-changed:
+    build: ../..
+    environment:
+      RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
+      RUST_LOG: info
+    volumes:
+      - ../config-changed.yaml:/config/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [edge]
+
+  whoami:
+    image: traefik/whoami:v1.10
+    networks: [edge]
+
+  tester:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["/bin/sh", "/test.sh"]
+    volumes:
+      - ../test.sh:/test.sh:ro
+    depends_on:
+      rs-auth:
+        condition: service_healthy
+      rs-auth-changed:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+      whoami:
+        condition: service_started
+    networks: [edge]
