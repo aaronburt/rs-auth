@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crate::cookie::CookieJar;
 use axum::extract::{ConnectInfo, Form, Query, State};
@@ -122,18 +123,50 @@ pub async fn submit(
         );
     }
 
-    let (at, locked_after) = match state.limiter.try_attempt(ip) {
+    let Ok(_slot) = Arc::clone(&state.login_slots).try_acquire_owned() else {
+        tracing::warn!(%ip, user = %shown, "sign-in refused: too many sign-ins waiting");
+        return page(
+            &state,
+            jar,
+            StatusCode::SERVICE_UNAVAILABLE,
+            LoginState::Busy,
+            rd,
+            shown,
+        );
+    };
+
+    let locked = |state: &SharedState, jar: CookieJar| {
+        page(
+            state,
+            jar,
+            StatusCode::TOO_MANY_REQUESTS,
+            LoginState::LockedOut,
+            rd,
+            String::new(),
+        )
+    };
+
+    let (at, mut locked_after) = match state.limiter.try_attempt(ip) {
         Attempt::Allowed { at, locked_after } => (at, locked_after),
         Attempt::Locked => {
             tracing::warn!(%ip, user = %shown, "sign-in refused: rate limit");
-            return page(
-                &state,
-                jar,
-                StatusCode::TOO_MANY_REQUESTS,
-                LoginState::LockedOut,
-                rd,
-                String::new(),
-            );
+            return locked(&state, jar);
+        }
+    };
+
+    let bucket = state.user_bucket(raw_username);
+    let user_at = match state.user_limiter.as_ref().map(|l| l.try_attempt(bucket)) {
+        None => None,
+        Some(Attempt::Allowed {
+            at,
+            locked_after: user_locked,
+        }) => {
+            locked_after |= user_locked;
+            Some(at)
+        }
+        Some(Attempt::Locked) => {
+            tracing::warn!(%ip, user = %shown, "sign-in refused: account rate limit");
+            return locked(&state, jar);
         }
     };
 
@@ -149,15 +182,8 @@ pub async fn submit(
 
     let Some(user) = user else {
         if locked_after {
-            tracing::warn!(%ip, user = %shown, "sign-in failed; IP is now rate limited");
-            return page(
-                &state,
-                jar,
-                StatusCode::TOO_MANY_REQUESTS,
-                LoginState::LockedOut,
-                rd,
-                String::new(),
-            );
+            tracing::warn!(%ip, user = %shown, "sign-in failed; now rate limited");
+            return locked(&state, jar);
         }
         tracing::warn!(%ip, user = %shown, "sign-in failed");
         return page(
@@ -170,6 +196,9 @@ pub async fn submit(
         );
     };
 
+    if let (Some(l), Some(at)) = (state.user_limiter.as_ref(), user_at) {
+        l.refund(bucket, at);
+    }
     state.limiter.refund(ip, at);
     let username = raw_username.to_owned();
     let now = token::now();

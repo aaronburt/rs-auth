@@ -2,13 +2,14 @@ use std::net::SocketAddr;
 
 use crate::cookie::CookieJar;
 use axum::extract::{ConnectInfo, State};
+use axum::http::header::COOKIE;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::redirect;
-use crate::net;
 use crate::redirect as rd;
 use crate::state::SharedState;
+use crate::{cookie, net};
 
 pub async fn verify(
     State(state): State<SharedState>,
@@ -21,6 +22,11 @@ pub async fn verify(
     if !net::is_trusted(&config.server.trusted_proxies, peer.ip()) {
         tracing::warn!(peer = %peer.ip(), "verify called from an address outside server.trusted_proxies");
         return unauthorized();
+    }
+
+    if jar.is_ambiguous(&config.session.cookie_name) {
+        tracing::warn!("verify refused: more than one session cookie with different values");
+        return (StatusCode::BAD_REQUEST, "ambiguous session cookie").into_response();
     }
 
     if let Some(s) = state.session_user(&jar) {
@@ -41,6 +47,16 @@ pub async fn verify(
         if !ok {
             tracing::error!(user = %s.username, "user data cannot be sent as headers");
             return unauthorized();
+        }
+        let rest = cookie::without(
+            headers
+                .get_all(COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok()),
+            &config.session.cookie_name,
+        );
+        if let Some(v) = rest.and_then(|r| HeaderValue::from_str(&r).ok()) {
+            out.insert(COOKIE, v);
         }
         return (StatusCode::OK, out).into_response();
     }

@@ -94,6 +94,7 @@ pub enum LoginState {
     WrongPassword,
     FormExpired,
     LockedOut,
+    Busy,
 }
 
 #[derive(Template)]
@@ -118,9 +119,19 @@ impl LoginPage<'_> {
     fn is_locked(&self) -> bool {
         self.state == LoginState::LockedOut
     }
+    fn is_busy(&self) -> bool {
+        self.state == LoginState::Busy
+    }
     fn focus_password(&self) -> bool {
         self.is_wrong_password() || (!self.username.is_empty() && !self.is_locked())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogoutNotice {
+    None,
+    Expired,
+    NotSaved,
 }
 
 #[derive(Template)]
@@ -130,7 +141,16 @@ pub struct LogoutPage<'a> {
     pub username: String,
     pub csrf: String,
     pub stay_url: String,
-    pub expired: bool,
+    pub notice: LogoutNotice,
+}
+
+impl LogoutPage<'_> {
+    fn is_expired(&self) -> bool {
+        self.notice == LogoutNotice::Expired
+    }
+    fn is_not_saved(&self) -> bool {
+        self.notice == LogoutNotice::NotSaved
+    }
 }
 
 #[derive(Template)]

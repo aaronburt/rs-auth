@@ -7,8 +7,8 @@ address = "0.0.0.0:9091"
 # its own host, and inside session.domain.
 portal_url = "https://auth.example.com"
 # Only these addresses may call /api/verify or set X-Forwarded-* headers.
-# Use your proxy's address or its Docker network.
-trusted_proxies = ["172.18.0.0/16"]
+# List only your proxy's own fixed address, never a network that apps share.
+trusted_proxies = ["172.30.1.10/32"]
 # Where to land after signing in when no app asked for sign-in.
 # Default: a small "You're signed in" page on the portal.
 # default_redirect_url = "https://home.example.com"
@@ -16,7 +16,8 @@ trusted_proxies = ["172.18.0.0/16"]
 # insecure_dev_mode = false
 
 [session]
-# Cookie is set on this domain so every subdomain shares it.
+# Cookie is set on this domain so every subdomain shares it. The browser sends
+# it to every host under this domain, so they must all be equally trusted.
 domain = "example.com"
 cookie_name = "rs_auth_session"
 version = 1                 # bump to log everyone out
@@ -26,14 +27,20 @@ expiry = "12h"              # 30m, 12h, 7d ...
 jwt_secret_file = "/run/secrets/rs_auth_jwt"
 # jwt_secret = "..."        # allowed, but warns at startup
 # Signed-out sessions are remembered here so a copied cookie stops working
-# even after a restart. Must be writable (in Docker, put it on a volume).
-# Without it, the list is kept in memory and is lost on restart.
+# even after a restart. Must be writable: rs-auth will not start otherwise, and
+# a sign-out that can't be saved answers 503 so it can be retried. In Docker,
+# mount a volume at /data. Without it, the list is kept in memory and is lost
+# on restart. Each rs-auth instance keeps its own list, so run only one.
 # Changing a user's password also ends that user's existing sessions.
 # revocation_file = "/data/revoked.txt"
 
 [login]
 max_attempts = 5            # failed sign-ins per client IP ...
 window = "5m"               # ... within this sliding window
+# Failed sign-ins per username, from any IP, within the same window. Stops
+# slow guessing spread over many addresses. Someone who knows a username can
+# use it to lock that account out for a window; 0 turns it off.
+max_attempts_per_user = 20
 
 # One table per user; the name after "users." is the username.
 # Hashes go in single quotes (a TOML literal string), so nothing in them

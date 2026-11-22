@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -13,16 +14,32 @@ pub enum Attempt {
     Allowed { at: Instant, locked_after: bool },
 }
 
-struct Inner {
-    attempts: HashMap<IpAddr, VecDeque<Instant>>,
+pub trait Bucket: Hash + Eq + Copy {
+    fn bucket(self) -> Self;
+}
+
+impl Bucket for IpAddr {
+    fn bucket(self) -> Self {
+        key(self)
+    }
+}
+
+impl Bucket for u64 {
+    fn bucket(self) -> Self {
+        self
+    }
+}
+
+struct Inner<K> {
+    attempts: HashMap<K, VecDeque<Instant>>,
     last_sweep: Option<Instant>,
 }
 
-pub struct RateLimiter {
+pub struct RateLimiter<K = IpAddr> {
     max_attempts: usize,
     window: Duration,
     max_entries: usize,
-    inner: Mutex<Inner>,
+    inner: Mutex<Inner<K>>,
 }
 
 pub fn key(ip: IpAddr) -> IpAddr {
@@ -41,7 +58,7 @@ fn prune(q: &mut VecDeque<Instant>, now: Instant, window: Duration) {
     }
 }
 
-impl RateLimiter {
+impl<K: Bucket> RateLimiter<K> {
     pub fn new(max_attempts: u32, window: Duration) -> Self {
         Self::with_capacity(max_attempts, window, MAX_ENTRIES)
     }
@@ -58,11 +75,11 @@ impl RateLimiter {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Inner> {
+    fn lock(&self) -> MutexGuard<'_, Inner<K>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn sweep(&self, inner: &mut Inner, now: Instant, force: bool) {
+    fn sweep(&self, inner: &mut Inner<K>, now: Instant, force: bool) {
         let due = inner
             .last_sweep
             .is_none_or(|t| now.duration_since(t) >= SWEEP_COOLDOWN);
@@ -77,12 +94,12 @@ impl RateLimiter {
         inner.last_sweep = Some(now);
     }
 
-    pub fn is_locked(&self, ip: IpAddr) -> bool {
+    pub fn is_locked(&self, ip: K) -> bool {
         self.is_locked_at(ip, Instant::now())
     }
 
-    pub fn is_locked_at(&self, ip: IpAddr, now: Instant) -> bool {
-        let k = key(ip);
+    pub fn is_locked_at(&self, ip: K, now: Instant) -> bool {
+        let k = ip.bucket();
         let mut inner = self.lock();
         let Some(q) = inner.attempts.get_mut(&k) else {
             return false;
@@ -95,12 +112,12 @@ impl RateLimiter {
         q.len() >= self.max_attempts
     }
 
-    pub fn try_attempt(&self, ip: IpAddr) -> Attempt {
+    pub fn try_attempt(&self, ip: K) -> Attempt {
         self.try_attempt_at(ip, Instant::now())
     }
 
-    pub fn try_attempt_at(&self, ip: IpAddr, now: Instant) -> Attempt {
-        let k = key(ip);
+    pub fn try_attempt_at(&self, ip: K, now: Instant) -> Attempt {
+        let k = ip.bucket();
         let mut inner = self.lock();
         if !inner.attempts.contains_key(&k) {
             if inner.attempts.len() >= SWEEP_THRESHOLD.min(self.max_entries) {
@@ -125,8 +142,8 @@ impl RateLimiter {
         }
     }
 
-    pub fn refund(&self, ip: IpAddr, at: Instant) {
-        let k = key(ip);
+    pub fn refund(&self, ip: K, at: Instant) {
+        let k = ip.bucket();
         let mut inner = self.lock();
         if let Some(q) = inner.attempts.get_mut(&k) {
             if let Some(i) = q.iter().rposition(|t| *t == at) {

@@ -5,10 +5,15 @@
 <h1>Sign out?</h1>
 <p class="sub">You are signed in as <strong>{{ username }}</strong>. Signing out ends your session on every protected app on this device.</p>
 </div>
-{% if expired %}
+{% if is_expired() %}
 <div class="alert warn" role="alert">
 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16.5v.01"></path></svg>
 <span>This page expired. Please try again.</span>
+</div>
+{% else if is_not_saved() %}
+<div class="alert error" role="alert">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16.5v.01"></path></svg>
+<span>Sign-out could not be saved, so it may not survive a restart. Please try again.</span>
 </div>
 {% endif %}
 <form method="post" action="/logout" class="actions">
