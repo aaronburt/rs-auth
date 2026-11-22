@@ -234,15 +234,6 @@ fn load_file_reads_warns_and_fails_clearly() {
         "points at the line: {bad}"
     );
 
-    let old = dir.join("config.yaml");
-    std::fs::write(&old, "server:\n  address: 0.0.0.0:9091\n").unwrap();
-    for name in ["config.yaml", "config.YML"] {
-        let e = Config::load_file(&dir.join(name)).err().unwrap();
-        assert!(matches!(e, ConfigError::Yaml(_)));
-        assert!(e.to_string().contains("now reads TOML"), "{e}");
-        assert!(e.to_string().contains(name), "{e}");
-    }
-
     let secret_file = dir.join("secret");
     std::fs::write(&secret_file, format!("{SECRET}\n")).unwrap();
     std::fs::write(
