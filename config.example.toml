@@ -42,6 +42,16 @@ window = "5m"               # ... within this sliding window
 # use it to lock that account out for a window; 0 turns it off.
 max_attempts_per_user = 20
 
+# Which groups may open each host. A host with no entry gets 403 for everyone.
+# A user needs any one of the listed groups. "*.lab.example.com" covers every
+# subdomain of lab.example.com (not lab.example.com itself); an exact host
+# beats a wildcard.
+[access."grafana.example.com"]
+groups = ["admins"]
+
+[access."photos.example.com"]
+groups = ["family", "admins"]
+
 # One table per user; the name after "users." is the username.
 # Hashes go in single quotes (a TOML literal string), so nothing in them
 # is read as an escape.

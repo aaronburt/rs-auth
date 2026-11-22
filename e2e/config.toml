@@ -17,6 +17,20 @@ revocation_file = "/data/revoked.txt"
 max_attempts = 5
 window = "5m"
 
+# Only the listed groups can open each host. Hosts not listed here get 403.
+# unlisted.example.test and lab.example.test are routed but deliberately have no rule.
+[access."whoami.example.test"]
+groups = ["family"]
+
+[access."other.example.test"]
+groups = ["family"]
+
+[access."admins.example.test"]
+groups = ["admins"]
+
+[access."*.lab.example.test"]
+groups = ["admins"]
+
 [users.aaron]
 display_name = "Aaron"
 email = "aaron@example.test"

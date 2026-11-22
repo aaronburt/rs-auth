@@ -21,7 +21,7 @@ http:
       service: rs-auth
       tls: {}
     apps:
-      rule: Host(`whoami.example.test`) || Host(`other.example.test`)
+      rule: Host(`whoami.example.test`) || Host(`other.example.test`) || Host(`admins.example.test`) || Host(`x.lab.example.test`) || Host(`lab.example.test`) || Host(`unlisted.example.test`)
       entryPoints: [websecure]
       middlewares: [rs-auth]
       service: whoami

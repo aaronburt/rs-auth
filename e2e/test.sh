@@ -324,7 +324,42 @@ lacks "Remote_Groups does not reach the app" "$TMP/alias.body" "Remote_Groups"
 lacks "the forged admins group does not reach the app" "$TMP/alias.body" "admins"
 
 echo
-echo "14. Rate limit (run last: it locks out this container's IP)"
+echo "14. Access rules: only listed groups, everything else 403"
+ADMINS=https://admins.example.test
+LAB=https://x.lab.example.test
+s=$(req acanon - "https://unlisted.example.test/")
+check "a host with no rule is refused without sign-in (403)" "$s" 403
+contains "and says it is not open to anyone" "$TMP/acanon.body" "is not open to anyone"
+lacks "and the app content is not served" "$TMP/acanon.body" "Hostname:"
+contains "the 403 page keeps its Content-Security-Policy" "$TMP/acanon.head" "content-security-policy: default-src 'none'"
+s=$(req acanonadm - "$ADMINS/")
+check "a listed host sends anonymous users to sign in (302)" "$s" 302
+s=$(sign_in jar_admin aaron aaron-test-pass "")
+check "aaron (admins, family) signs in" "$s" 303
+s=$(req acadm jar_admin "$ADMINS/")
+check "admins can open the admins host" "$s" 200
+contains "and the app sees aaron" "$TMP/acadm.body" "Remote-User: aaron"
+s=$(req aclab jar_admin "$LAB/")
+check "admins can open a host under the *.lab wildcard" "$s" 200
+s=$(req aclabroot jar_admin "https://lab.example.test/")
+check "the wildcard does not cover lab.example.test itself (403)" "$s" 403
+s=$(req acunl jar_admin "https://unlisted.example.test/")
+check "even admins get 403 on a host with no rule" "$s" 403
+contains "the 403 page names the signed-in user" "$TMP/acunl.body" "signed in as <strong>aaron</strong>"
+contains "and links to sign out on the portal" "$TMP/acunl.body" "href=\"$AUTH/logout\""
+s=$(req acfam - -H "Cookie: rs_auth_session=$live" "$ADMINS/")
+check "carol (family only) is refused on the admins host (403)" "$s" 403
+contains "with the no-access page" "$TMP/acfam.body" "does not have access to <strong>admins.example.test</strong>"
+lacks "and the app content is not served" "$TMP/acfam.body" "Hostname:"
+s=$(req acfamforged - -H "Cookie: rs_auth_session=$live" -H "Remote-Groups: admins" -H "Remote-User: aaron" "$ADMINS/")
+check "forged Remote-Groups does not get carol in (403)" "$s" 403
+s=$(req acfamlab - -H "Cookie: rs_auth_session=$live" "$LAB/")
+check "carol is refused under the *.lab wildcard (403)" "$s" 403
+s=$(req acfamapp - -H "Cookie: rs_auth_session=$live" "$APP/")
+check "carol still opens a family host (200)" "$s" 200
+
+echo
+echo "15. Rate limit (run last: it locks out this container's IP)"
 touch "$TMP/jar_rl"
 req rlpage jar_rl "$AUTH/login" >/dev/null
 t=$(csrf_of rlpage)

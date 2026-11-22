@@ -161,6 +161,15 @@ pub struct SignedInPage<'a> {
     pub username: String,
 }
 
+#[derive(Template)]
+#[template(path = "forbidden.html")]
+pub struct ForbiddenPage<'a> {
+    pub css: &'a str,
+    pub host: String,
+    pub username: Option<String>,
+    pub logout_url: String,
+}
+
 pub fn login_page(
     state: LoginState,
     target_host: Option<String>,

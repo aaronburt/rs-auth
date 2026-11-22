@@ -34,7 +34,7 @@ auth.example.test {
 	}
 }
 
-whoami.example.test, other.example.test {
+whoami.example.test, other.example.test, admins.example.test, x.lab.example.test, lab.example.test, unlisted.example.test {
 	tls internal
 	import rs_auth
 	reverse_proxy whoami:80

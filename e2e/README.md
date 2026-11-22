@@ -77,7 +77,13 @@ container logs if a check fails.
     only the session cookie it gets no `Cookie` header at all. Two different
     session cookies get `400`. Underscore aliases like `Remote_User` never
     reach the app.
-14. Five failed sign-ins lock the client out with a 429 and no `Retry-After`,
+14. Access rules: a host with no `[access]` entry gets 403 for everyone,
+    with no sign-in redirect. On `admins.example.test` (admins only) aaron
+    gets in and carol (family only) gets the 403 "No access" page, even with
+    forged `Remote-Groups`. `*.lab.example.test` lets admins into
+    `x.lab.example.test` but not `lab.example.test` itself, and the 403 page
+    keeps its CSP through the proxy.
+15. Five failed sign-ins lock the client out with a 429 and no `Retry-After`,
     even with a rotating `X-Forwarded-For`.
 
 ## Trying it in a browser
@@ -86,7 +92,7 @@ Add this to your hosts file
 (`C:\Windows\System32\drivers\etc\hosts` or `/etc/hosts`):
 
 ```
-127.0.0.1 auth.example.test whoami.example.test other.example.test
+127.0.0.1 auth.example.test whoami.example.test other.example.test admins.example.test x.lab.example.test
 ```
 
 Start it with `docker compose -f e2e/traefik/docker-compose.yml up --build rs-auth traefik whoami`,

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod access;
 pub mod cli;
 pub mod commands;
 pub mod config;

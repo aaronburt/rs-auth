@@ -6,6 +6,7 @@
 #   docker compose -f examples/demo/docker-compose.yml down
 #
 # Users: aaron / aaron-test-pass, guest / guest-test-pass
+# other.rs-auth.localhost is admins-only: sign in as guest there to see the 403 page.
 name: rs-auth-demo
 
 networks:
