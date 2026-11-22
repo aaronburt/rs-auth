@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use axum_extra::extract::cookie::CookieJar;
+use crate::cookie::CookieJar;
 use tokio::sync::Semaphore;
 
 use crate::config::{Config, User};
 use crate::password;
 use crate::ratelimit::RateLimiter;
-use crate::token::{Hs256Signer, TokenError, TokenSigner};
+use crate::revoke::Revocations;
+use crate::token::{self, Claims, Hs256Signer, TokenError, TokenSigner};
 
 pub type SharedState = Arc<AppState>;
 
@@ -18,22 +19,33 @@ pub struct AppState {
     pub limiter: RateLimiter,
     pub dummy_hash: String,
     pub hash_permits: Arc<Semaphore>,
+    pub revocations: Arc<Revocations>,
 }
 
 pub struct SessionUser<'a> {
     pub username: &'a str,
     pub user: &'a User,
+    pub claims: Claims,
 }
 
 impl AppState {
     pub fn new(config: Config) -> SharedState {
+        Self::try_new(config).expect("loading the revocation list")
+    }
+
+    pub fn try_new(config: Config) -> std::io::Result<SharedState> {
+        let revocations = Arc::new(Revocations::load(
+            config.session.revocation_file.as_deref(),
+            token::now(),
+        )?);
         let signer = Box::new(Hs256Signer::new(&config.session.secret, &config.issuer()));
         let limiter = RateLimiter::new(config.login.max_attempts, config.login.window);
         let permits = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(2)
             .clamp(1, MAX_CONCURRENT_HASHES);
-        Arc::new(Self {
+        Ok(Arc::new(Self {
+            revocations,
             signer,
             limiter,
             dummy_hash: password::dummy_hash(
@@ -45,11 +57,19 @@ impl AppState {
             ),
             hash_permits: Arc::new(Semaphore::new(permits)),
             config,
-        })
+        }))
+    }
+
+    pub fn fingerprint(&self, user: &User) -> String {
+        token::password_fingerprint(&self.config.session.secret, &user.password_hash)
+    }
+
+    pub fn session_until(&self, claims: &Claims) -> u64 {
+        claims.exp + token::LEEWAY_SECS
     }
 
     pub fn session_user(&self, jar: &CookieJar) -> Option<SessionUser<'_>> {
-        let token = jar.get(&self.config.session.cookie_name)?.value();
+        let token = jar.get(&self.config.session.cookie_name)?;
         if token.is_empty() {
             return None;
         }
@@ -69,7 +89,22 @@ impl AppState {
             return None;
         }
         let (username, user) = self.config.users.get_key_value(&claims.sub)?;
-        Some(SessionUser { username, user })
+        if !bool::from(subtle::ConstantTimeEq::ct_eq(
+            claims.pwh.as_bytes(),
+            self.fingerprint(user).as_bytes(),
+        )) {
+            tracing::debug!(user = %claims.sub, "session from before a password change");
+            return None;
+        }
+        if self.revocations.is_revoked(&claims.jti) {
+            tracing::debug!(user = %claims.sub, "session was signed out");
+            return None;
+        }
+        Some(SessionUser {
+            username,
+            user,
+            claims,
+        })
     }
 
     pub async fn check_password(&self, username: &str, password: String) -> Option<&User> {

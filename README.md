@@ -37,7 +37,8 @@ Then wire up your proxy: see [`examples/traefik`](examples/traefik) or
 | `rs-auth check-config [-c config.yaml]` | Validates the config without starting. |
 | `rs-auth healthcheck [addr]` | Exits 0 if `/healthz` answers. Used by the Docker image. |
 
-Log level follows `RUST_LOG` (default `info`).
+Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (default
+`info`). Per-module filters are not supported.
 
 ## Endpoints
 
@@ -47,7 +48,7 @@ Log level follows `RUST_LOG` (default `info`).
 | GET | `/login?rd=<url>` | Browser | The sign-in form. Already signed in: straight to `rd`. |
 | POST | `/login` | Form | Checks CSRF, the rate limit and the password. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. |
 | GET | `/logout` | Browser | A "Sign out?" page. Apps link here. |
-| POST | `/logout` | Form | Clears the cookie (CSRF-checked), then to `/login`. |
+| POST | `/logout` | Form | Ends the session server-side and clears the cookie (CSRF-checked), then to `/login`. |
 | GET | `/logged-in` | Browser | Where a sign-in without `rd` lands. Change with `server.default_redirect_url`. |
 | GET | `/healthz` | Monitoring | `ok`. |
 
@@ -76,6 +77,10 @@ Changes to the config apply on restart.
 - Verify always uses the user's **current** groups from the config. Removing a
   user from the YAML locks them out on their next request.
 - Bump `session.version` to sign everyone out at once.
+- Signing out revokes that session's token ID (`jti`), so a copied cookie stops
+  working too. Set `session.revocation_file` to keep the list across restarts.
+- Each token carries a keyed fingerprint of the user's password hash, so
+  changing a password ends that user's existing sessions.
 
 ## Security notes
 

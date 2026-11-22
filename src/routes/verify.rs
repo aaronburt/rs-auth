@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 
+use crate::cookie::CookieJar;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum_extra::extract::cookie::CookieJar;
 
 use super::redirect;
 use crate::net;

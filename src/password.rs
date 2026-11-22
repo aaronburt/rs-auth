@@ -53,8 +53,7 @@ pub fn verify(password: &str, phc: &str) -> bool {
 }
 
 pub fn dummy_hash(like: Option<&str>) -> String {
-    let random: [u8; 24] = rand::random();
-    let pw: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let pw = crate::random::hex::<24>();
     let params = like
         .and_then(|phc| PasswordHash::new(phc).ok())
         .and_then(|parsed| Params::try_from(&parsed).ok());

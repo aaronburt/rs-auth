@@ -5,30 +5,26 @@ description = "A small forward-auth login portal for Traefik and Caddy"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.104"
 argon2 = "0.6.0"
 askama = "0.16.1"
 axum = "0.8"
-axum-extra = { version = "0.12.6", features = ["cookie"] }
+getrandom = "0.4"
 base64 = "0.23.1"
-clap = { version = "4.6.8", features = ["derive", "env"] }
+hmac = "0.13"
 ipnet = "2.12.2"
-jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
-rand = "0.10.4"
+jsonwebtoken = { version = "12.0.0", default-features = false }
 rpassword = "7.5.5"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_yaml_ng = "0.10"
 sha2 = "0.11.1"
 subtle = "2.6.1"
-thiserror = "2.0.21"
-time = "0.3.55"
-tokio = { version = "1.54.1", features = ["full"] }
-tower-http = { version = "0.7.1", features = ["trace", "timeout"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 url = "2.5.8"
 
 [dev-dependencies]
+tokio = { version = "1.54.1", features = ["io-util"] }
 http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }
 

@@ -240,6 +240,96 @@ async fn full_loop() {
         .find(|c| c.starts_with("rs_auth_session="))
         .unwrap();
     assert!(cleared.contains("Max-Age=0") && cleared.contains("Domain=example.com"));
+
+    let replayed = send(
+        &app,
+        PROXY,
+        verify_req("GET", "grafana.example.com", "/", &session),
+    )
+    .await;
+    assert_eq!(
+        replayed.status,
+        StatusCode::FOUND,
+        "a signed-out cookie must not work again"
+    );
+}
+
+async fn sign_out(app: &axum::Router, session: &str) {
+    let r = send(app, PROXY, get("/logout", session)).await;
+    let cookies = format!(
+        "{session}; __Host-rs_auth_csrf={}",
+        r.cookie("__Host-rs_auth_csrf").unwrap()
+    );
+    let r = send(
+        app,
+        PROXY,
+        post_form("/logout", &cookies, &[("csrf", &r.csrf_field())]),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn signing_out_ends_only_that_session() {
+    let app = app();
+    let laptop = sign_in(&app, "aaron", "correct horse").await;
+    let phone = sign_in(&app, "aaron", "correct horse").await;
+    sign_out(&app, &laptop).await;
+    let r = send(
+        &app,
+        PROXY,
+        verify_req("GET", "grafana.example.com", "/", &laptop),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FOUND);
+    let r = send(
+        &app,
+        PROXY,
+        verify_req("GET", "grafana.example.com", "/", &phone),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn password_change_ends_old_sessions() {
+    let old = app_with(&yaml(1, "[admins]", false));
+    let session = sign_in(&old, "aaron", "correct horse").await;
+    let changed = yaml(1, "[admins]", false).replace(aaron_hash(), &quick_hash("correct horse"));
+    let new = app_with(&changed);
+    let r = send(
+        &new,
+        PROXY,
+        verify_req("GET", "grafana.example.com", "/", &session),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FOUND);
+}
+
+#[tokio::test]
+async fn sign_out_survives_a_restart_with_revocation_file() {
+    let dir = std::env::temp_dir().join(format!("rs-auth-it-{}", rs_auth::token::new_jti()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("revoked.txt");
+    let cfg = yaml(1, "[admins]", false).replace(
+        "  expiry: 12h\n",
+        &format!("  expiry: 12h\n  revocation_file: {}\n", file.display()),
+    );
+    assert!(cfg.contains("revocation_file"));
+    let first = app_with(&cfg);
+    let session = sign_in(&first, "aaron", "correct horse").await;
+    sign_out(&first, &session).await;
+    assert!(std::fs::read_to_string(&file).unwrap().contains(' '));
+
+    let restarted = app_with(&cfg);
+    let r = send(
+        &restarted,
+        PROXY,
+        verify_req("GET", "grafana.example.com", "/", &session),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FOUND);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[tokio::test]

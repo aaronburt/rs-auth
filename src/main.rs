@@ -1,76 +1,140 @@
 #![forbid(unsafe_code)]
 
+use std::error::Error;
 use std::io::{BufRead, IsTerminal};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context, bail};
-use clap::{Parser, Subcommand};
 use rs_auth::{AppState, Config, password};
-use tracing_subscriber::EnvFilter;
+use tracing::level_filters::LevelFilter;
 
-#[derive(Parser)]
-#[command(
-    name = "rs-auth",
-    version,
-    about = "A small forward-auth login portal for Traefik and Caddy"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
+type Res<T> = Result<T, Box<dyn Error>>;
+
+const USAGE: &str = "\
+rs-auth: a small forward-auth login portal for Traefik and Caddy
+
+Usage:
+  rs-auth serve [-c, --config <file>]    Run the portal
+  rs-auth hash-password [--stdin]        Print an Argon2id hash for a password
+  rs-auth check-config [-c <file>]       Validate the config without starting
+  rs-auth healthcheck [address]          Exit 0 if /healthz answers (default 127.0.0.1:9091)
+  rs-auth --version | --help
+
+The config file defaults to $RS_AUTH_CONFIG, then config.yaml.
+The log level comes from RUST_LOG (error, warn, info, debug or trace; default info).";
+
+enum Command {
+    Serve { config: PathBuf },
+    HashPassword { stdin: bool },
+    CheckConfig { config: PathBuf },
+    Healthcheck { address: SocketAddr },
+    Version,
 }
 
-#[derive(Subcommand)]
-enum Command {
-    Serve {
-        #[arg(short, long, env = "RS_AUTH_CONFIG", default_value = "config.yaml")]
-        config: PathBuf,
-    },
-    HashPassword {
-        #[arg(long)]
-        stdin: bool,
-    },
-    CheckConfig {
-        #[arg(short, long, env = "RS_AUTH_CONFIG", default_value = "config.yaml")]
-        config: PathBuf,
-    },
-    Healthcheck {
-        #[arg(default_value = "127.0.0.1:9091")]
-        address: SocketAddr,
-    },
+fn parse_args(args: Vec<String>) -> Result<Option<Command>, String> {
+    let default_config = || {
+        std::env::var_os("RS_AUTH_CONFIG")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("config.yaml"))
+    };
+    let mut args = args.into_iter();
+    let Some(cmd) = args.next() else {
+        return Err("a command is required".into());
+    };
+    match cmd.as_str() {
+        "-h" | "--help" | "help" => return Ok(None),
+        "-V" | "--version" => {
+            return Ok(Some(Command::Version));
+        }
+        _ => {}
+    }
+    let rest: Vec<String> = args.collect();
+    let config_flag = |rest: &[String]| -> Result<PathBuf, String> {
+        let mut config = None;
+        let mut it = rest.iter();
+        while let Some(a) = it.next() {
+            let value = if a == "-c" || a == "--config" {
+                it.next()
+                    .cloned()
+                    .ok_or_else(|| format!("{a} needs a file name"))?
+            } else if let Some(v) = a.strip_prefix("--config=") {
+                v.to_owned()
+            } else {
+                return Err(format!("unexpected argument {a:?}"));
+            };
+            config = Some(PathBuf::from(value));
+        }
+        Ok(config.unwrap_or_else(default_config))
+    };
+    match cmd.as_str() {
+        "serve" => Ok(Some(Command::Serve {
+            config: config_flag(&rest)?,
+        })),
+        "check-config" => Ok(Some(Command::CheckConfig {
+            config: config_flag(&rest)?,
+        })),
+        "hash-password" => match rest.as_slice() {
+            [] => Ok(Some(Command::HashPassword { stdin: false })),
+            [f] if f == "--stdin" => Ok(Some(Command::HashPassword { stdin: true })),
+            [other, ..] => Err(format!("unexpected argument {other:?}")),
+        },
+        "healthcheck" => match rest.as_slice() {
+            [] => Ok(Some(Command::Healthcheck {
+                address: "127.0.0.1:9091".parse().expect("static address"),
+            })),
+            [a] => a
+                .parse()
+                .map(|address| Some(Command::Healthcheck { address }))
+                .map_err(|_| format!("{a:?} is not an address like 127.0.0.1:9091")),
+            [_, other, ..] => Err(format!("unexpected argument {other:?}")),
+        },
+        other => Err(format!("unknown command {other:?}")),
+    }
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result = match cli.command {
+    let command = match parse_args(std::env::args().skip(1).collect()) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("error: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let result = match command {
         Command::Serve { config } => serve(config),
         Command::HashPassword { stdin } => hash_password(stdin),
         Command::CheckConfig { config } => check_config(config),
         Command::Healthcheck { address } => healthcheck(address),
+        Command::Version => {
+            println!("rs-auth {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn load(path: &std::path::Path) -> anyhow::Result<Config> {
-    let loaded = Config::load_file(path).context("loading config")?;
+fn load(path: &std::path::Path) -> Res<Config> {
+    let loaded = Config::load_file(path).map_err(|e| format!("loading config: {e}"))?;
     for w in &loaded.warnings {
         tracing::warn!("{w}");
-        if !tracing::enabled!(tracing::Level::WARN) {
-            eprintln!("warning: {w}");
-        }
     }
     Ok(loaded.config)
 }
 
-fn check_config(path: PathBuf) -> anyhow::Result<()> {
-    let loaded = Config::load_file(&path).context("loading config")?;
+fn check_config(path: PathBuf) -> Res<()> {
+    let loaded = Config::load_file(&path).map_err(|e| format!("loading config: {e}"))?;
     for w in &loaded.warnings {
         eprintln!("warning: {w}");
     }
@@ -86,7 +150,7 @@ fn check_config(path: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn healthcheck(addr: SocketAddr) -> anyhow::Result<()> {
+fn healthcheck(addr: SocketAddr) -> Res<()> {
     use std::io::{Read, Write};
     use std::time::Duration;
     let mut s = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
@@ -98,11 +162,11 @@ fn healthcheck(addr: SocketAddr) -> anyhow::Result<()> {
     if buf.starts_with(b"HTTP/1.1 200") {
         Ok(())
     } else {
-        bail!("unhealthy: {}", String::from_utf8_lossy(&buf))
+        Err(format!("unhealthy: {}", String::from_utf8_lossy(&buf)).into())
     }
 }
 
-fn hash_password(from_stdin: bool) -> anyhow::Result<()> {
+fn hash_password(from_stdin: bool) -> Res<()> {
     let pw = if from_stdin || !std::io::stdin().is_terminal() {
         let mut line = String::new();
         std::io::stdin().lock().read_line(&mut line)?;
@@ -111,23 +175,28 @@ fn hash_password(from_stdin: bool) -> anyhow::Result<()> {
         let a = rpassword::prompt_password("Password: ")?;
         let b = rpassword::prompt_password("Again: ")?;
         if a != b {
-            bail!("the passwords did not match");
+            return Err("the passwords did not match".into());
         }
         a
     };
     if !pw.is_empty() && pw.chars().count() < 8 {
         eprintln!("warning: that password is shorter than 8 characters");
     }
-    let h = password::hash(&pw).map_err(anyhow::Error::msg)?;
-    println!("{h}");
+    println!("{}", password::hash(&pw)?);
     Ok(())
 }
 
-fn serve(path: PathBuf) -> anyhow::Result<()> {
+fn log_level() -> LevelFilter {
+    std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(LevelFilter::INFO)
+}
+
+fn serve(path: PathBuf) -> Res<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_max_level(log_level())
+        .with_ansi(false)
         .init();
     let config = load(&path)?;
     let addr = config.server.address;
@@ -137,14 +206,15 @@ fn serve(path: PathBuf) -> anyhow::Result<()> {
         .block_on(run(config, addr))
 }
 
-async fn run(config: Config, addr: SocketAddr) -> anyhow::Result<()> {
+async fn run(config: Config, addr: SocketAddr) -> Res<()> {
     let portal = config.server.portal_url.clone();
     let users = config.users.len();
-    let state = AppState::new(config);
+    let state =
+        AppState::try_new(config).map_err(|e| format!("loading session.revocation_file: {e}"))?;
     let app = rs_auth::router(state);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("binding {addr}"))?;
+        .map_err(|e| format!("binding {addr}: {e}"))?;
     tracing::info!(%addr, %portal, users, "rs-auth listening");
     axum::serve(
         listener,
@@ -170,4 +240,56 @@ async fn shutdown() {
     #[cfg(not(unix))]
     let term = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = term => {} }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn cfg(a: &[&str]) -> PathBuf {
+        match parse_args(args(a)).unwrap().unwrap() {
+            Command::Serve { config } | Command::CheckConfig { config } => config,
+            _ => panic!("not a config command"),
+        }
+    }
+
+    #[test]
+    fn config_flag_forms() {
+        assert_eq!(cfg(&["serve", "-c", "a.yaml"]), PathBuf::from("a.yaml"));
+        assert_eq!(
+            cfg(&["serve", "--config", "b.yaml"]),
+            PathBuf::from("b.yaml")
+        );
+        assert_eq!(
+            cfg(&["check-config", "--config=c.yaml"]),
+            PathBuf::from("c.yaml")
+        );
+    }
+
+    #[test]
+    fn bad_input_is_an_error() {
+        assert!(parse_args(args(&[])).is_err());
+        assert!(parse_args(args(&["nope"])).is_err());
+        assert!(parse_args(args(&["serve", "-c"])).is_err());
+        assert!(parse_args(args(&["serve", "--wat"])).is_err());
+        assert!(parse_args(args(&["hash-password", "--wat"])).is_err());
+        assert!(parse_args(args(&["healthcheck", "not-an-address"])).is_err());
+    }
+
+    #[test]
+    fn simple_commands() {
+        assert!(matches!(
+            parse_args(args(&["hash-password", "--stdin"])).unwrap(),
+            Some(Command::HashPassword { stdin: true })
+        ));
+        assert!(matches!(
+            parse_args(args(&["healthcheck", "127.0.0.1:1234"])).unwrap(),
+            Some(Command::Healthcheck { .. })
+        ));
+        assert!(parse_args(args(&["--help"])).unwrap().is_none());
+    }
 }

@@ -13,17 +13,32 @@ use crate::password;
 pub const MIN_SECRET_LEN: usize = 32;
 pub const SECRET_ENV: &str = "RS_AUTH_JWT_SECRET";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ConfigError {
-    #[error("could not read {}: {error}", path.display())]
     Read {
         path: PathBuf,
         error: std::io::Error,
     },
-    #[error("config is not valid YAML: {0}")]
-    Yaml(#[from] serde_yaml_ng::Error),
-    #[error("{0}")]
+    Yaml(serde_yaml_ng::Error),
     Invalid(String),
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, error } => write!(f, "could not read {}: {error}", path.display()),
+            Self::Yaml(e) => write!(f, "config is not valid YAML: {e}"),
+            Self::Invalid(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+impl From<serde_yaml_ng::Error> for ConfigError {
+    fn from(e: serde_yaml_ng::Error) -> Self {
+        Self::Yaml(e)
+    }
 }
 
 fn invalid<T>(msg: impl Into<String>) -> Result<T, ConfigError> {
@@ -119,6 +134,8 @@ struct RawSession {
     jwt_secret_file: Option<PathBuf>,
     #[serde(default)]
     jwt_secret: Option<String>,
+    #[serde(default)]
+    revocation_file: Option<PathBuf>,
 }
 
 fn default_cookie_name() -> String {
@@ -192,6 +209,7 @@ pub struct SessionConfig {
     pub version: u32,
     pub expiry: Duration,
     pub secret: Vec<u8>,
+    pub revocation_file: Option<PathBuf>,
 }
 
 impl fmt::Debug for SessionConfig {
@@ -467,6 +485,7 @@ impl Config {
                     version: raw.session.version,
                     expiry,
                     secret,
+                    revocation_file: raw.session.revocation_file,
                 },
                 login: LoginConfig {
                     max_attempts: raw.login.max_attempts,

@@ -1,7 +1,7 @@
+use crate::cookie::CookieJar;
 use axum::extract::{Form, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
-use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
 use super::{redirect, render};
@@ -64,7 +64,13 @@ pub async fn submit(
     }
     if let Some(s) = state.session_user(&jar) {
         tracing::info!(user = %s.username, "signed out");
+        let until = state.session_until(&s.claims);
+        let jti = s.claims.jti.clone();
+        state
+            .revocations
+            .revoke(&jti, until, crate::token::now())
+            .await;
     }
-    let jar = csrf::clear(jar, secure).add(cookie::clear_session(&state.config));
+    let jar = csrf::clear(jar, secure).with(cookie::clear_session(&state.config));
     (jar, redirect(StatusCode::SEE_OTHER, "/login")).into_response()
 }

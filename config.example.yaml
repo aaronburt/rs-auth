@@ -25,6 +25,11 @@ session:
   # then jwt_secret. At least 32 bytes. Make one with: openssl rand -hex 32
   jwt_secret_file: /run/secrets/rs_auth_jwt
   # jwt_secret: "..."        # allowed, but warns at startup
+  # Signed-out sessions are remembered here so a copied cookie stops working
+  # even after a restart. Must be writable (in Docker, put it on a volume).
+  # Without it, the list is kept in memory and is lost on restart.
+  # Changing a user's password also ends that user's existing sessions.
+  # revocation_file: /data/revoked.txt
 
 login:
   max_attempts: 5            # failed sign-ins per client IP ...

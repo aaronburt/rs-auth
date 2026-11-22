@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 
+use crate::cookie::CookieJar;
 use axum::extract::{ConnectInfo, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
 use super::{redirect, render};
@@ -176,9 +176,10 @@ pub async fn submit(
     let claims = Claims {
         iss: config.issuer(),
         sub: username.clone(),
-        groups: user.groups.clone(),
         iat: now,
         exp: now + config.session.expiry.as_secs(),
+        jti: token::new_jti(),
+        pwh: state.fingerprint(user),
         ver: config.session.version,
     };
     let token = match state.signer.sign(&claims) {
@@ -190,7 +191,7 @@ pub async fn submit(
     };
     tracing::info!(%ip, user = %username, "signed in");
     let to = rd::target(config, rd);
-    let jar = csrf::clear(jar, secure).add(cookie::session(config, token));
+    let jar = csrf::clear(jar, secure).with(cookie::session(config, token));
     (jar, redirect(StatusCode::SEE_OTHER, to.as_str())).into_response()
 }
 
