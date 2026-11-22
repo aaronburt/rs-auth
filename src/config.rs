@@ -20,7 +20,6 @@ pub enum ConfigError {
         error: std::io::Error,
     },
     Toml(toml::de::Error),
-    Yaml(PathBuf),
     Invalid(String),
 }
 
@@ -29,12 +28,6 @@ impl fmt::Display for ConfigError {
         match self {
             Self::Read { path, error } => write!(f, "could not read {}: {error}", path.display()),
             Self::Toml(e) => write!(f, "config is not valid TOML: {e}"),
-            Self::Yaml(path) => write!(
-                f,
-                "{} looks like a YAML config; rs-auth now reads TOML. \
-                 Convert it to config.toml using config.example.toml as a guide",
-                path.display()
-            ),
             Self::Invalid(m) => f.write_str(m),
         }
     }
@@ -291,12 +284,6 @@ impl Environment for RealEnvironment {
 
 impl Config {
     pub fn load_file(path: &Path) -> Result<Loaded, ConfigError> {
-        if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
-        {
-            return Err(ConfigError::Yaml(path.to_owned()));
-        }
         let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
             path: path.to_owned(),
             error,

@@ -68,7 +68,7 @@ refuses to start on a bad config. The rules:
 - The file is TOML. Durations are strings like `"30m"`, `"12h"`, `"7d"`. Each
   user is a `[users.<name>]` table; put its hash in single quotes
   (`'$argon2id$...'`), a TOML literal string, so nothing in it is read as an
-  escape. A `.yaml`/`.yml` path is refused with a hint to convert it.
+  escape.
 - The server warns if the config file is world-readable.
 
 Changes to the config apply on restart.
