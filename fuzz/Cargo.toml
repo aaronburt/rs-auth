@@ -54,4 +54,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "totp_input"
+path = "fuzz_targets/totp_input.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

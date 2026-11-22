@@ -61,6 +61,8 @@ email = "aaron@example.com"
 groups = ["admins"]
 # Generated with: rs-auth hash-password
 password = '$argon2id$v=19$m=65536,t=3,p=4$REPLACE_ME'
+# Optional authenticator-app code (TOTP). Generated with: rs-auth totp-secret aaron
+# totp_secret = "BASE32SECRET"
 
 [users.guest]
 display_name = "Guest"

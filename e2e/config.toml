@@ -1,5 +1,5 @@
 # Test-only config for the end-to-end environments. Do not reuse.
-# Passwords: aaron / aaron-test-pass, guest / guest-test-pass, carol / carol-test-pass.
+# Passwords: aaron / aaron-test-pass, guest / guest-test-pass, carol / carol-test-pass, dave / dave-test-pass (with an authentication code).
 [server]
 address = "0.0.0.0:9091"
 portal_url = "https://auth.example.test"
@@ -14,7 +14,7 @@ revocation_file = "/data/revoked.txt"
 # The secret comes from RS_AUTH_JWT_SECRET in docker-compose.yml.
 
 [login]
-max_attempts = 5
+max_attempts = 10
 window = "5m"
 
 # Only the listed groups can open each host. Hosts not listed here get 403.
@@ -46,3 +46,9 @@ password = '$argon2id$v=19$m=65536,t=3,p=4$4wjJ8feFDW9PXIUwtFp+BA$Wce2/JDo23/tE0
 display_name = "Carol"
 groups = ["family"]
 password = '$argon2id$v=19$m=65536,t=3,p=4$Whz0/ahNMwQqrWx7DAIbDg$L4XrG9doGitrHOWKkr8cWkoGMK4iGE3+mhY5QSz5/gc'
+
+[users.dave]
+display_name = "Dave"
+groups = ["family"]
+password = '$argon2id$v=19$m=65536,t=3,p=4$tU+nFpHABujsLr2cvHKDTA$A1V+rgexGClKe9H4vsvMQsksTlfHHvmqrXV2NFmw2yE'
+totp_secret = "3XJPMRSXLJAVIET76IQAJOBBU77XCDFT"

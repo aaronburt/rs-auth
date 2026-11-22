@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
 use super::{redirect, render};
+use crate::config::User;
 use crate::ratelimit::Attempt;
 use crate::state::SharedState;
 use crate::token::{self, Claims};
@@ -15,6 +16,12 @@ use crate::ui::{self, LoginState};
 use crate::{cookie, csrf, net, password, redirect as rd};
 
 const MAX_USERNAME_LEN: usize = 64;
+
+enum Verdict<'a> {
+    Signed(&'a User),
+    Refused,
+    Busy,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct RdQuery {
@@ -28,6 +35,8 @@ pub struct LoginForm {
     username: String,
     #[serde(default)]
     password: String,
+    #[serde(default)]
+    totp: String,
     #[serde(default)]
     csrf: String,
     #[serde(default)]
@@ -54,7 +63,8 @@ fn page(
 ) -> Response {
     let (jar, token) = csrf::issue(jar, !state.config.server.insecure_dev_mode);
     let (rd, host) = rd_parts(state, rd);
-    let p = ui::login_page(login_state, host, rd, token, username);
+    let totp = state.config.totp_enabled();
+    let p = ui::login_page(login_state, host, rd, token, username, totp);
     (jar, render(status, &p)).into_response()
 }
 
@@ -123,18 +133,6 @@ pub async fn submit(
         );
     }
 
-    let Ok(_slot) = Arc::clone(&state.login_slots).try_acquire_owned() else {
-        tracing::warn!(%ip, user = %shown, "sign-in refused: too many sign-ins waiting");
-        return page(
-            &state,
-            jar,
-            StatusCode::SERVICE_UNAVAILABLE,
-            LoginState::Busy,
-            rd,
-            shown,
-        );
-    };
-
     let locked = |state: &SharedState, jar: CookieJar| {
         page(
             state,
@@ -170,30 +168,86 @@ pub async fn submit(
         }
     };
 
-    let well_formed = !raw_username.is_empty()
-        && raw_username.len() <= MAX_USERNAME_LEN
-        && !form.password.is_empty()
-        && form.password.len() <= password::MAX_PASSWORD_LEN;
-    let user = if well_formed {
-        state.check_password(raw_username, form.password).await
-    } else {
+    let mut why = "unknown user";
+    let mut claim = None;
+    let eligible = if raw_username.is_empty()
+        || raw_username.len() > MAX_USERNAME_LEN
+        || form.password.is_empty()
+        || form.password.len() > password::MAX_PASSWORD_LEN
+    {
+        why = "malformed form";
         None
+    } else {
+        config.users.get(raw_username).filter(|user| {
+            let Some(secret) = &user.totp_secret else {
+                return true;
+            };
+            claim = state
+                .totp
+                .accept(raw_username, secret, &form.totp, token::now());
+            why = "wrong code";
+            claim.is_some()
+        })
     };
 
-    let Some(user) = user else {
-        if locked_after {
-            tracing::warn!(%ip, user = %shown, "sign-in failed; now rate limited");
-            return locked(&state, jar);
+    let verdict = match eligible {
+        None => Verdict::Refused,
+        Some(user) => match Arc::clone(&state.login_slots).try_acquire_owned() {
+            Err(_) => Verdict::Busy,
+            Ok(_slot) => {
+                if state
+                    .check_password(user.password_hash.clone(), form.password)
+                    .await
+                {
+                    Verdict::Signed(user)
+                } else {
+                    why = "wrong password";
+                    Verdict::Refused
+                }
+            }
+        },
+    };
+
+    let release_claim = || {
+        if let Some(accepted) = claim {
+            state.totp.release(raw_username, accepted);
         }
-        tracing::warn!(%ip, user = %shown, "sign-in failed");
-        return page(
-            &state,
-            jar,
-            StatusCode::UNAUTHORIZED,
-            LoginState::WrongPassword,
-            rd,
-            shown,
-        );
+    };
+
+    let user = match verdict {
+        Verdict::Signed(user) => user,
+        Verdict::Busy => {
+            release_claim();
+            if let (Some(l), Some(at)) = (state.user_limiter.as_ref(), user_at) {
+                l.refund(bucket, at);
+            }
+            state.limiter.refund(ip, at);
+            tracing::warn!(%ip, user = %shown, "sign-in refused: too many sign-ins waiting");
+            return page(
+                &state,
+                jar,
+                StatusCode::SERVICE_UNAVAILABLE,
+                LoginState::Busy,
+                rd,
+                shown,
+            );
+        }
+        Verdict::Refused => {
+            release_claim();
+            if locked_after {
+                tracing::warn!(%ip, user = %shown, why, "sign-in failed; now rate limited");
+                return locked(&state, jar);
+            }
+            tracing::warn!(%ip, user = %shown, why, "sign-in failed");
+            return page(
+                &state,
+                jar,
+                StatusCode::UNAUTHORIZED,
+                LoginState::WrongPassword,
+                rd,
+                shown,
+            );
+        }
     };
 
     if let (Some(l), Some(at)) = (state.user_limiter.as_ref(), user_at) {

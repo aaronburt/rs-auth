@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tracing::level_filters::LevelFilter;
 
-use crate::{AppState, Config, password};
+use crate::{AppState, Config, password, totp};
 
 pub type Res<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -60,6 +60,17 @@ pub fn hash_for(pw: &str) -> Res<(String, Option<&'static str>)> {
     let warning = (!pw.is_empty() && pw.chars().count() < 8)
         .then_some("that password is shorter than 8 characters");
     Ok((password::hash(pw)?, warning))
+}
+
+pub struct NewTotp {
+    pub secret: String,
+    pub uri: Option<String>,
+}
+
+pub fn new_totp_secret(account: Option<&str>) -> NewTotp {
+    let secret = totp::encode_secret(&crate::random::bytes::<{ totp::SECRET_BYTES }>());
+    let uri = account.map(|a| totp::otpauth_uri(&secret, a, "rs-auth"));
+    NewTotp { secret, uri }
 }
 
 pub fn log_level(rust_log: Option<&str>) -> LevelFilter {

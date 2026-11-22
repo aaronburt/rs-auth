@@ -7,6 +7,7 @@ rs-auth: a small forward-auth login portal for Traefik and Caddy
 Usage:
   rs-auth serve [-c, --config <file>]    Run the portal
   rs-auth hash-password [--stdin]        Print an Argon2id hash for a password
+  rs-auth totp-secret [username]         Print a new TOTP secret (and an otpauth:// link for the user)
   rs-auth check-config [-c <file>]       Validate the config without starting
   rs-auth healthcheck [address]          Exit 0 if /healthz answers (default 127.0.0.1:9091)
   rs-auth --version | --help
@@ -17,6 +18,7 @@ The log level comes from RUST_LOG (error, warn, info, debug or trace; default in
 pub enum Command {
     Serve { config: PathBuf },
     HashPassword { stdin: bool },
+    TotpSecret { account: Option<String> },
     CheckConfig { config: PathBuf },
     Healthcheck { address: SocketAddr },
     Version,
@@ -68,6 +70,13 @@ pub fn parse_args(args: Vec<String>) -> Result<Option<Command>, String> {
         "hash-password" => match rest.as_slice() {
             [] => Ok(Some(Command::HashPassword { stdin: false })),
             [f] if f == "--stdin" => Ok(Some(Command::HashPassword { stdin: true })),
+            [other, ..] => Err(format!("unexpected argument {other:?}")),
+        },
+        "totp-secret" => match rest.as_slice() {
+            [] => Ok(Some(Command::TotpSecret { account: None })),
+            [a] if !a.starts_with('-') => Ok(Some(Command::TotpSecret {
+                account: Some(a.clone()),
+            })),
             [other, ..] => Err(format!("unexpected argument {other:?}")),
         },
         "healthcheck" => match rest.as_slice() {

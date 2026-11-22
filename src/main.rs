@@ -22,6 +22,14 @@ fn main() -> ExitCode {
     let result = match command {
         Command::Serve { config } => serve(&config),
         Command::HashPassword { stdin } => hash_password(stdin),
+        Command::TotpSecret { account } => {
+            let made = commands::new_totp_secret(account.as_deref());
+            println!("{}", made.secret);
+            if let Some(uri) = made.uri {
+                println!("{uri}");
+            }
+            Ok(())
+        }
         Command::CheckConfig { config } => check_config(&config),
         Command::Healthcheck { address } => commands::healthcheck(address),
         Command::Version => {

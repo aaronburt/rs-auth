@@ -37,6 +37,7 @@ Then wire up your proxy: see [`examples/traefik`](examples/traefik) or
 | --- | --- |
 | `rs-auth serve [-c config.toml]` | Runs the portal. `RS_AUTH_CONFIG` also sets the path. |
 | `rs-auth hash-password [--stdin]` | Prompts twice and prints an Argon2id hash. |
+| `rs-auth totp-secret [username]` | Prints a new TOTP secret and, with a username, an `otpauth://` link for an authenticator app. |
 | `rs-auth check-config [-c config.toml]` | Validates the config without starting. |
 | `rs-auth healthcheck [addr]` | Exits 0 if `/healthz` answers. Used by the Docker image. |
 
@@ -49,7 +50,7 @@ Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (defau
 | --- | --- | --- | --- |
 | GET | `/api/verify` | The proxy, internally | Host with no `[access]` entry: `403` for everyone. Not signed in: `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Signed in but not in one of the host's groups: `403` with a "No access" page. Otherwise `200`, `Remote-*` headers, and a `Cookie` header holding the request's other cookies (see [Proxy setup](#proxy-setup)). Two session cookies with different values get `400`. Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. Never route it publicly. |
 | GET | `/login?rd=<url>` | Browser | The sign-in form. Already signed in: straight to `rd`. |
-| POST | `/login` | Form | Checks CSRF, the rate limits and the password. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. Too many sign-ins already waiting: `503` and an amber message. |
+| POST | `/login` | Form | Checks CSRF, the rate limits, the username, the code (if the user has one) and then the password, cheapest first. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. Too many sign-ins already waiting: `503` and an amber message. |
 | GET | `/logout` | Browser | A "Sign out?" page. Apps link here. |
 | POST | `/logout` | Form | Ends the session server-side and clears the cookie (CSRF-checked), then to `/login`. If `session.revocation_file` can't be written: `503`, the cookie is kept, and the page offers to try again. |
 | GET | `/logged-in` | Browser | Where a sign-in without `rd` lands. Change with `server.default_redirect_url`. |
@@ -75,6 +76,40 @@ refuses to start on a bad config. The rules:
 - The server warns if the config file is world-readable.
 
 Changes to the config apply on restart.
+
+### Two-factor codes (TOTP)
+
+Give a user an authenticator-app code by adding a secret to their table:
+
+```sh
+rs-auth totp-secret aaron     # prints the secret, then an otpauth:// link
+```
+
+```toml
+[users.aaron]
+totp_secret = "SWNACFK7XPDGQUMRNNVPJXVG3ICXR3Q4"
+```
+
+Type the secret into any authenticator app (or turn the link into a QR code
+with any QR tool; rs-auth doesn't draw one). Codes are standard TOTP
+(RFC 6238): SHA-1, 6 digits, 30 seconds. A code is accepted one step either
+side of the current one, and each code works once per user; a code that is
+older than one already used is refused too. The secret must be at least 16
+bytes of base32.
+
+- The sign-in form shows an "Authentication code" box when any user has a
+  secret. Users without one leave it empty and it is ignored. A user with a
+  secret must give the right code *and* the password.
+- Anyone who can read `config.toml` can generate codes, so keep it private
+  (`chmod 600`).
+- Adding, changing or removing a user's secret ends that user's existing
+  sessions, the same as changing their password.
+
+Sign-in checks run cheapest first: the username, then the code, then the
+Argon2 password hash. A sign-in that fails an earlier check never costs an
+Argon2 hash, and never takes a place in the queue for one. All failures show
+the same message ("Invalid username, password or code" once any user has a
+secret).
 
 ### Access rules
 
@@ -204,8 +239,12 @@ Docker socket) and [`examples/caddy`](examples/caddy) follow these rules, and
 
 ## Security notes
 
-- Unknown usernames still run a full Argon2 check, and every failure says
-  "Invalid username or password", so usernames can't be probed.
+- Every failure shows the same message, so the page doesn't say whether the
+  username, code or password was wrong. Sign-ins are checked cheapest first
+  (username, code, then Argon2), so a failure before the password check
+  answers faster than one after it. Someone timing responses can tell an
+  unknown username, or a wrong code, from a wrong password. This is the price
+  of never hashing for those requests.
 - Failed sign-ins are limited per client IP (`login.max_attempts` within
   `login.window`, default 5 in 5 minutes) and per username from any IP
   (`login.max_attempts_per_user`, default 20 in the same window; `0` turns it

@@ -15,6 +15,7 @@ pub mod revoke;
 pub mod routes;
 pub mod state;
 pub mod token;
+pub mod totp;
 pub mod ui;
 
 pub use config::Config;
