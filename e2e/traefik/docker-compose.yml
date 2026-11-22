@@ -1,0 +1,64 @@
+# End-to-end test of rs-auth behind Traefik v3.
+#
+#   docker compose -f e2e/traefik/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
+#   docker compose -f e2e/traefik/docker-compose.yml down
+#
+# Traefik serves https with its built-in self-signed certificate. The tester
+# container runs e2e/traefik/test.sh against it and exits 0 if every check passes.
+name: rs-auth-e2e-traefik
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - --entrypoints.websecure.address=:443
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --log.level=WARN
+    volumes:
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+    ports:
+      # Optional: browse it yourself at https://whoami.example.test:8443
+      # after pointing *.example.test at 127.0.0.1 in your hosts file.
+      - "127.0.0.1:8443:443"
+    networks:
+      edge:
+        ipv4_address: 172.30.0.10
+        aliases: [auth.example.test, whoami.example.test, other.example.test]
+
+  rs-auth:
+    build: ../..
+    environment:
+      RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
+      RUST_LOG: info
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [edge]
+
+  whoami:
+    image: traefik/whoami:v1.10
+    networks: [edge]
+
+  tester:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["/bin/sh", "/test.sh"]
+    volumes:
+      - ./test.sh:/test.sh:ro
+    depends_on:
+      rs-auth:
+        condition: service_healthy
+      traefik:
+        condition: service_started
+      whoami:
+        condition: service_started
+    networks: [edge]

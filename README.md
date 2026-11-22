@@ -103,6 +103,13 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
+For a full check behind a real Traefik in Docker, see
+[`e2e/traefik`](e2e/traefik/README.md):
+
+```sh
+docker compose -f e2e/traefik/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
+```
+
 For trying it locally over plain http, set `server.insecure_dev_mode: true`
 and use a `*.localhost` portal URL. Never use dev mode in production.
 
