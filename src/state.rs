@@ -8,6 +8,8 @@ use crate::password;
 use crate::ratelimit::RateLimiter;
 use crate::revoke::Revocations;
 use crate::token::{self, Claims, Hs256Signer, TokenError, TokenSigner};
+use crate::totp;
+use crate::totp::Replay;
 
 pub type SharedState = Arc<AppState>;
 
@@ -20,7 +22,7 @@ pub struct AppState {
     pub signer: Box<dyn TokenSigner>,
     pub limiter: RateLimiter,
     pub user_limiter: Option<RateLimiter<u64>>,
-    pub dummy_hash: String,
+    pub totp: Replay,
     pub hash_permits: Arc<Semaphore>,
     pub login_slots: Arc<Semaphore>,
     pub revocations: Arc<Revocations>,
@@ -61,13 +63,7 @@ impl AppState {
             signer,
             limiter,
             user_limiter,
-            dummy_hash: password::dummy_hash(
-                config
-                    .users
-                    .values()
-                    .next()
-                    .map(|u| u.password_hash.as_str()),
-            ),
+            totp: Replay::default(),
             hash_permits: Arc::new(Semaphore::new(permits)),
             login_slots: Arc::new(Semaphore::new(permits + MAX_QUEUED_LOGINS)),
             config,
@@ -75,7 +71,11 @@ impl AppState {
     }
 
     pub fn fingerprint(&self, user: &User) -> String {
-        token::password_fingerprint(&self.config.session.secret, &user.password_hash)
+        let material = match &user.totp_secret {
+            Some(secret) => format!("{}\0{}", user.password_hash, totp::encode_secret(secret)),
+            None => user.password_hash.clone(),
+        };
+        token::password_fingerprint(&self.config.session.secret, &material)
     }
 
     pub fn session_until(&self, claims: &Claims) -> u64 {
@@ -146,18 +146,15 @@ impl AppState {
         })
     }
 
-    pub async fn check_password(&self, username: &str, password: String) -> Option<&User> {
-        let permit = Arc::clone(&self.hash_permits).acquire_owned().await.ok()?;
-        let (hash, user) = match self.config.users.get(username) {
-            Some(u) => (u.password_hash.clone(), Some(u)),
-            None => (self.dummy_hash.clone(), None),
+    pub async fn check_password(&self, hash: String, password: String) -> bool {
+        let Ok(permit) = Arc::clone(&self.hash_permits).acquire_owned().await else {
+            return false;
         };
-        let ok = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let _permit = permit;
             password::verify(&password, &hash)
         })
         .await
-        .unwrap_or(false);
-        if ok { user } else { None }
+        .unwrap_or(false)
     }
 }

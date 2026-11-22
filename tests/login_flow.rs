@@ -834,7 +834,8 @@ async fn hash_permit_is_held_until_argon2_finishes() {
     let state = rs_auth::AppState::new(config_from(&y));
     let total = state.hash_permits.available_permits();
     let s2 = state.clone();
-    let task = tokio::spawn(async move { s2.check_password("aaron", "x".into()).await.is_some() });
+    let hash = state.config.users["aaron"].password_hash.clone();
+    let task = tokio::spawn(async move { s2.check_password(hash, "x".into()).await });
     let mut waited = 0;
     while state.hash_permits.available_permits() == total {
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;

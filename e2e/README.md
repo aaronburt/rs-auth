@@ -83,7 +83,13 @@ container logs if a check fails.
     forged `Remote-Groups`. `*.lab.example.test` lets admins into
     `x.lab.example.test` but not `lab.example.test` itself, and the 403 page
     keeps its CSP through the proxy.
-15. Five failed sign-ins lock the client out with a 429 and no `Retry-After`,
+15. Authentication codes: `dave` has a TOTP secret. The password alone, or
+    with a wrong code, is refused with the same message as any other failure;
+    a right code with a wrong password is refused without using the code up;
+    password and code together sign in and reach the app; the same code, or an
+    older one, can't sign in again. A user without a secret ignores the code
+    box.
+16. Ten failed sign-ins lock the client out with a 429 and no `Retry-After`,
     even with a rotating `X-Forwarded-For`.
 
 ## Trying it in a browser
@@ -97,5 +103,6 @@ Add this to your hosts file
 
 Start it with `docker compose -f e2e/traefik/docker-compose.yml up --build rs-auth traefik whoami`,
 then open https://whoami.example.test:8443 and accept the self-signed
-certificate. Sign in as `aaron` / `aaron-test-pass`, `guest` / `guest-test-pass`
-or `carol` / `carol-test-pass`.
+certificate. Sign in as `aaron` / `aaron-test-pass`, `guest` / `guest-test-pass`,
+`carol` / `carol-test-pass` or `dave` / `dave-test-pass` (dave also needs a code:
+the secret is in `config.toml`).

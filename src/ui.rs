@@ -27,6 +27,7 @@ main{width:400px;max-width:100%}
 .head{display:flex;flex-direction:column;gap:8px}
 h1{margin:0;font-size:24px;line-height:32px;font-weight:650}
 .sub{margin:0;font-size:15px;line-height:22px;color:var(--muted)}
+.hint{margin:0;font-size:14px;line-height:20px;color:var(--muted)}
 .sub strong{color:var(--text);font-weight:600;overflow-wrap:anywhere}
 form{margin:0;display:flex;flex-direction:column;gap:16px}
 fieldset{border:0;margin:0;padding:0;min-width:0;display:flex;flex-direction:column;gap:16px}
@@ -107,6 +108,7 @@ pub struct LoginPage<'a> {
     pub rd: String,
     pub csrf: String,
     pub username: String,
+    pub totp: bool,
 }
 
 impl LoginPage<'_> {
@@ -176,6 +178,7 @@ pub fn login_page(
     rd: String,
     csrf: String,
     username: String,
+    totp: bool,
 ) -> LoginPage<'static> {
     LoginPage {
         css: CSS,
@@ -185,5 +188,6 @@ pub fn login_page(
         rd,
         csrf,
         username,
+        totp,
     }
 }

@@ -13,7 +13,7 @@
 {% else if is_wrong_password() %}
 <div class="alert warn" role="alert" id="form-msg">
 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16.5v.01"></path></svg>
-<span>Invalid username or password.</span>
+<span>{% if totp %}Invalid username, password or code.{% else %}Invalid username or password.{% endif %}</span>
 </div>
 {% else if is_busy() %}
 <div class="alert warn" role="alert" id="form-msg">
@@ -41,7 +41,12 @@
 <button type="button" class="reveal" data-reveal="password" aria-label="Show password" aria-pressed="false" hidden>Show</button>
 </div>
 </div>
-<button type="submit" class="btn">Sign in</button>
+{% if totp %}<div class="field">
+<label for="totp">Authentication code</label>
+<input id="totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="8" pattern="[0-9 ]*"{% if is_wrong_password() %} aria-invalid="true"{% endif %}>
+<p class="hint">Leave empty if your account has no code.</p>
+</div>
+{% endif %}<button type="submit" class="btn">Sign in</button>
 </fieldset>
 </form>
 {% endblock %}

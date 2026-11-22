@@ -175,3 +175,18 @@ fn cli_covers_the_remaining_forms() {
         _ => panic!("expected check-config"),
     }
 }
+
+#[test]
+fn totp_secret_command_parses() {
+    use rs_auth::cli::Command;
+    assert!(matches!(
+        parse_args(args(&["totp-secret"])).unwrap(),
+        Some(Command::TotpSecret { account: None })
+    ));
+    assert!(matches!(
+        parse_args(args(&["totp-secret", "aaron"])).unwrap(),
+        Some(Command::TotpSecret { account: Some(a) }) if a == "aaron"
+    ));
+    assert!(parse_args(args(&["totp-secret", "--wat"])).is_err());
+    assert!(parse_args(args(&["totp-secret", "a", "b"])).is_err());
+}

@@ -10,6 +10,7 @@ use url::Url;
 
 use crate::access::{self, Access, Pattern};
 use crate::password;
+use crate::totp;
 
 pub const MIN_SECRET_LEN: usize = 32;
 pub const SECRET_ENV: &str = "RS_AUTH_JWT_SECRET";
@@ -198,6 +199,8 @@ struct RawUser {
     #[serde(default)]
     groups: Vec<String>,
     password: String,
+    #[serde(default)]
+    totp_secret: Option<String>,
 }
 
 #[derive(Clone)]
@@ -253,6 +256,7 @@ pub struct User {
     pub email: Option<String>,
     pub groups: Vec<String>,
     pub password_hash: String,
+    pub totp_secret: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for User {
@@ -262,6 +266,10 @@ impl fmt::Debug for User {
             .field("email", &self.email)
             .field("groups", &self.groups)
             .field("password_hash", &"<redacted>")
+            .field(
+                "totp_secret",
+                &self.totp_secret.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -301,6 +309,10 @@ impl Environment for RealEnvironment {
 }
 
 impl Config {
+    pub fn totp_enabled(&self) -> bool {
+        self.users.values().any(|u| u.totp_secret.is_some())
+    }
+
     pub fn load_file(path: &Path) -> Result<Loaded, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
             path: path.to_owned(),
@@ -453,6 +465,13 @@ impl Config {
                     "users.{name}.password uses weak Argon2 settings. Re-hash it with `rs-auth hash-password`."
                 ));
             }
+            let totp_secret =
+                match u.totp_secret.as_deref() {
+                    Some(text) => Some(totp::decode_secret(text).map_err(|e| {
+                        ConfigError::Invalid(format!("users.{name}.totp_secret: {e}"))
+                    })?),
+                    None => None,
+                };
             for g in &u.groups {
                 if !valid_group(g) {
                     return invalid(format!(
@@ -481,6 +500,7 @@ impl Config {
                     email: u.email,
                     groups: u.groups,
                     password_hash: u.password,
+                    totp_secret,
                 },
             );
         }

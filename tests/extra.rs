@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use common::*;
-use rs_auth::password;
 use rs_auth::revoke::Revocations;
 use rs_auth::state::{AppState, SharedState};
 use rs_auth::token::{self, Claims, TokenError, TokenSigner};
@@ -18,7 +17,7 @@ fn state_with(
     revocations: Revocations,
 ) -> SharedState {
     Arc::new(AppState {
-        dummy_hash: password::dummy_hash(None),
+        totp: rs_auth::totp::Replay::default(),
         limiter: rs_auth::ratelimit::RateLimiter::new(
             config.login.max_attempts,
             config.login.window,

@@ -52,20 +52,6 @@ pub fn verify(password: &str, phc: &str) -> bool {
     }
 }
 
-pub fn dummy_hash(like: Option<&str>) -> String {
-    let pw = crate::random::hex::<24>();
-    let params = like
-        .and_then(|phc| PasswordHash::new(phc).ok())
-        .and_then(|parsed| Params::try_from(&parsed).ok());
-    match params {
-        Some(p) => Argon2::new(Algorithm::Argon2id, Version::V0x13, p)
-            .hash_password(pw.as_bytes())
-            .map(|h| h.to_string())
-            .unwrap_or_else(|_| hash(&pw).expect("hashing a random password")),
-        None => hash(&pw).expect("hashing a random password"),
-    }
-}
-
 pub fn weak_params(phc: &str) -> bool {
     PasswordHash::new(phc)
         .ok()
@@ -104,14 +90,12 @@ mod tests {
     }
 
     #[test]
-    fn dummy_hash_copies_params() {
+    fn weak_params_are_flagged() {
         let params = Params::new(256, 1, 1, None).unwrap();
         let user = Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
             .hash_password(b"x")
             .unwrap()
             .to_string();
-        assert!(dummy_hash(Some(&user)).starts_with("$argon2id$v=19$m=256,t=1,p=1$"));
-        assert!(dummy_hash(None).starts_with("$argon2id$v=19$m=65536,t=3,p=4$"));
         assert!(weak_params(&user));
         assert!(!weak_params(&hash("x").unwrap()));
     }

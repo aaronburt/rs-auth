@@ -46,7 +46,25 @@ sign_in() {
   t=$(csrf_of loginpage)
   req signin "$1" -X POST "$AUTH/login" \
     --data-urlencode "username=$2" --data-urlencode "password=$3" \
-    --data-urlencode "csrf=$t" --data-urlencode "rd=$4"
+    --data-urlencode "csrf=$t" --data-urlencode "rd=$4" \
+    --data-urlencode "totp=${5:-}"
+}
+
+TOTP_KEY=ddd2f646575a4154127ff22004b821a7ff710cb3
+totp_code() {
+  step=$(( $(date +%s) / 30 + $1 ))
+  k=$TOTP_KEY
+  while [ ${#k} -lt 128 ]; do k="${k}00"; done
+  ipad=""; opad=""
+  for b in $(echo "$k" | sed 's/../& /g'); do
+    ipad="$ipad$(printf '%02x' $((0x$b ^ 54)))"
+    opad="$opad$(printf '%02x' $((0x$b ^ 92)))"
+  done
+  inner=$({ echo "$ipad" | xxd -r -p; printf '%016x' "$step" | xxd -r -p; } | sha1sum | cut -d' ' -f1)
+  mac=$({ echo "$opad" | xxd -r -p; echo "$inner" | xxd -r -p; } | sha1sum | cut -d' ' -f1)
+  off=$(( 0x$(echo "$mac" | cut -c40) ))
+  word=$(echo "$mac" | cut -c$((off * 2 + 1))-$((off * 2 + 8)))
+  printf '%06d' $(( (0x$word & 0x7fffffff) % 1000000 ))
 }
 
 code() {
@@ -137,7 +155,7 @@ echo
 echo "3. Wrong password"
 s=$(sign_in jar_wrong aaron not-the-password "")
 check "wrong password is refused (401)" "$s" 401
-contains "shows the generic message" "$TMP/signin.body" "Invalid username or password."
+contains "shows the generic message" "$TMP/signin.body" "Invalid username, password or code."
 lacks "no session cookie is set" "$TMP/signin.head" "rs_auth_session="
 s=$(sign_in jar_wrong nobody not-the-password "")
 check "unknown user gets the same 401" "$s" 401
@@ -359,19 +377,46 @@ s=$(req acfamapp - -H "Cookie: rs_auth_session=$live" "$APP/")
 check "carol still opens a family host (200)" "$s" 200
 
 echo
-echo "15. Rate limit (run last: it locks out this container's IP)"
+echo "15. Authentication codes (TOTP)"
+s=$(req totppage - "$AUTH/login")
+contains "the login page has a code box" "$TMP/totppage.body" 'name="totp"'
+s=$(sign_in jar_nocode dave dave-test-pass "")
+check "right password without a code is refused (401)" "$s" 401
+contains "with the same generic message" "$TMP/signin.body" "Invalid username, password or code."
+lacks "and no session cookie" "$TMP/signin.head" "rs_auth_session="
+s=$(sign_in jar_badcode dave dave-test-pass "" "$(totp_code 5)")
+check "right password with a wrong code is refused (401)" "$s" 401
+c=$(totp_code 0)
+s=$(sign_in jar_badpw dave not-the-password "" "$c")
+check "right code with a wrong password is refused (401)" "$s" 401
+contains "with the same generic message" "$TMP/signin.body" "Invalid username, password or code."
+s=$(sign_in jar_dave dave dave-test-pass "" "$c")
+check "that refused code was not used up: password and code sign in (303)" "$s" 303
+s=$(req daveapp jar_dave "$APP/")
+check "dave opens a family host (200)" "$s" 200
+contains "and the app sees dave" "$TMP/daveapp.body" "Remote-User: dave"
+s=$(sign_in jar_replay dave dave-test-pass "" "$c")
+check "the same code cannot sign in twice (401)" "$s" 401
+lacks "and sets no session cookie" "$TMP/signin.head" "rs_auth_session="
+s=$(sign_in jar_older dave dave-test-pass "" "$(totp_code -1)")
+check "an older code cannot follow a newer one (401)" "$s" 401
+s=$(sign_in jar_nototp aaron aaron-test-pass "" "123456")
+check "a user without a secret ignores the code box (303)" "$s" 303
+
+echo
+echo "16. Rate limit (run last: it locks out this container's IP)"
 touch "$TMP/jar_rl"
 req rlpage jar_rl "$AUTH/login" >/dev/null
 t=$(csrf_of rlpage)
 n=1
-while [ $n -le 5 ]; do
+while [ $n -le 10 ]; do
   req rl jar_rl -X POST "$AUTH/login" -H "X-Forwarded-For: 10.0.0.$n" \
     --data-urlencode "username=aaron" --data-urlencode "password=wrong-$n" --data-urlencode "csrf=$t" >/dev/null
   n=$((n + 1))
 done
 s=$(req rl jar_rl -X POST "$AUTH/login" -H "X-Forwarded-For: 10.0.0.99" \
   --data-urlencode "username=aaron" --data-urlencode "password=aaron-test-pass" --data-urlencode "csrf=$t")
-check "after 5 failures even the right password is refused (429)" "$s" 429
+check "after 10 failures even the right password is refused (429)" "$s" 429
 contains "shows the locked-out message" "$TMP/rl.body" "Too many sign-in attempts"
 lacks "sends no Retry-After" "$TMP/rl.head" "retry-after"
 lacks "sets no session cookie" "$TMP/rl.head" "rs_auth_session="
