@@ -1,0 +1,30 @@
+http:
+  middlewares:
+    rs-auth:
+      forwardAuth:
+        address: http://rs-auth:9091/api/verify
+        trustForwardHeader: true
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
+
+  routers:
+    portal:
+      rule: Host(`auth.rs-auth.localhost`)
+      entryPoints: [websecure]
+      service: rs-auth
+      tls: {}
+    apps:
+      rule: Host(`whoami.rs-auth.localhost`) || Host(`other.rs-auth.localhost`)
+      entryPoints: [websecure]
+      middlewares: [rs-auth]
+      service: whoami
+      tls: {}
+
+  services:
+    rs-auth:
+      loadBalancer:
+        servers:
+          - url: http://rs-auth:9091
+    whoami:
+      loadBalancer:
+        servers:
+          - url: http://whoami:80

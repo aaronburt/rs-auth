@@ -1,5 +1,3 @@
-//! `rd` allow and deny cases, and rebuilding the original URL.
-
 mod common;
 
 use axum::http::{HeaderMap, HeaderValue};
@@ -60,14 +58,12 @@ fn rebuilds_original_url() {
         "https://grafana.example.com/d/abc?x=1"
     );
 
-    // Missing URI means the root.
     h.remove("x-forwarded-uri");
     assert_eq!(
         original_url(&h).unwrap().as_str(),
         "https://grafana.example.com/"
     );
 
-    // A URI that is not a path cannot change the host.
     h.insert("x-forwarded-uri", HeaderValue::from_static("//evil.net/x"));
     assert_eq!(
         original_url(&h).unwrap().host_str(),
@@ -79,7 +75,6 @@ fn rebuilds_original_url() {
         Some("grafana.example.com")
     );
 
-    // Hosts with path or userinfo characters are refused.
     h.insert(
         "x-forwarded-host",
         HeaderValue::from_static("evil.net/@grafana.example.com"),
@@ -106,5 +101,20 @@ fn login_url_encodes_rd() {
     assert_eq!(
         login_url(&c, None).as_str(),
         "https://auth.example.com/login"
+    );
+}
+
+#[test]
+fn uses_the_rightmost_forwarded_values() {
+    let mut h = HeaderMap::new();
+    h.insert("x-forwarded-proto", HeaderValue::from_static("http, https"));
+    h.insert(
+        "x-forwarded-host",
+        HeaderValue::from_static("evil.net, grafana.example.com"),
+    );
+    h.insert("x-forwarded-uri", HeaderValue::from_static("/"));
+    assert_eq!(
+        original_url(&h).unwrap().as_str(),
+        "https://grafana.example.com/"
     );
 }

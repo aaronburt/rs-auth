@@ -22,6 +22,9 @@ openssl rand -hex 32 > jwt.secret           # point session.jwt_secret_file at i
 ./target/release/rs-auth serve
 ```
 
+To try it in a browser first, run the demo in [`examples/demo`](examples/demo/docker-compose.yml)
+(Docker, no hosts-file changes) and open https://whoami.rs-auth.localhost:8443.
+
 Then wire up your proxy: see [`examples/traefik`](examples/traefik) or
 [`examples/caddy`](examples/caddy).
 

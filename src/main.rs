@@ -23,24 +23,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the portal.
     Serve {
-        /// Path to config.yaml.
         #[arg(short, long, env = "RS_AUTH_CONFIG", default_value = "config.yaml")]
         config: PathBuf,
     },
-    /// Prompt for a password and print its Argon2id hash for config.yaml.
     HashPassword {
-        /// Read the password from the first line of stdin instead of prompting.
         #[arg(long)]
         stdin: bool,
     },
-    /// Validate config.yaml without starting the server.
     CheckConfig {
         #[arg(short, long, env = "RS_AUTH_CONFIG", default_value = "config.yaml")]
         config: PathBuf,
     },
-    /// Exit 0 if the server at ADDRESS answers /healthz. For container health checks.
     Healthcheck {
         #[arg(default_value = "127.0.0.1:9091")]
         address: SocketAddr,
@@ -97,6 +91,7 @@ fn healthcheck(addr: SocketAddr) -> anyhow::Result<()> {
     use std::time::Duration;
     let mut s = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;
+    s.set_write_timeout(Some(Duration::from_secs(3)))?;
     s.write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
     let mut buf = [0u8; 12];
     s.read_exact(&mut buf)?;
@@ -120,7 +115,7 @@ fn hash_password(from_stdin: bool) -> anyhow::Result<()> {
         }
         a
     };
-    if pw.chars().count() < 8 {
+    if !pw.is_empty() && pw.chars().count() < 8 {
         eprintln!("warning: that password is shorter than 8 characters");
     }
     let h = password::hash(&pw).map_err(anyhow::Error::msg)?;

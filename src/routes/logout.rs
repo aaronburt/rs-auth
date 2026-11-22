@@ -1,8 +1,3 @@
-//! `GET /logout` shows a "Sign out?" page; `POST /logout` signs out.
-//!
-//! Signing out needs a POST with a CSRF token, so a stray link or image
-//! cannot log anyone out.
-
 use axum::extract::{Form, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -62,13 +57,14 @@ pub async fn submit(
     jar: CookieJar,
     Form(form): Form<LogoutForm>,
 ) -> Response {
-    if !csrf::check(&jar, &form.csrf) {
+    let secure = !state.config.server.insecure_dev_mode;
+    if !csrf::check(&jar, &form.csrf, secure) {
         let stay = state.config.server.default_redirect_url.to_string();
         return confirm_page(&state, jar, StatusCode::FORBIDDEN, stay, true);
     }
     if let Some(s) = state.session_user(&jar) {
         tracing::info!(user = %s.username, "signed out");
     }
-    let jar = jar.add(cookie::clear_session(&state.config));
+    let jar = csrf::clear(jar, secure).add(cookie::clear_session(&state.config));
     (jar, redirect(StatusCode::SEE_OTHER, "/login")).into_response()
 }

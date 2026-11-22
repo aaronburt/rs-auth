@@ -1,15 +1,18 @@
-//! Double-submit CSRF tokens for the login and logout forms.
-//!
-//! A random token goes in a short-lived, host-only cookie and in a hidden
-//! form field. A POST is accepted only when the two match. This sits on top
-//! of `SameSite=Lax` on the session cookie.
-
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use subtle::ConstantTimeEq;
 
-pub const COOKIE_NAME: &str = "rs_auth_csrf";
+pub const SECURE_COOKIE_NAME: &str = "__Host-rs_auth_csrf";
+pub const DEV_COOKIE_NAME: &str = "rs_auth_csrf";
 const TOKEN_HEX_LEN: usize = 64;
 const MAX_AGE_SECS: i64 = 3600;
+
+pub fn cookie_name(secure: bool) -> &'static str {
+    if secure {
+        SECURE_COOKIE_NAME
+    } else {
+        DEV_COOKIE_NAME
+    }
+}
 
 fn is_well_formed(t: &str) -> bool {
     t.len() == TOKEN_HEX_LEN && t.bytes().all(|b| b.is_ascii_hexdigit())
@@ -20,28 +23,32 @@ pub fn new_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The token to put in a form: the one already in the browser's cookie if it
-/// looks valid (so several tabs keep working), otherwise a fresh one.
-/// Returns the jar with the cookie (re)set.
-pub fn issue(jar: CookieJar, secure: bool) -> (CookieJar, String) {
-    let token = jar
-        .get(COOKIE_NAME)
-        .map(|c| c.value().to_owned())
-        .filter(|t| is_well_formed(t))
-        .unwrap_or_else(new_token);
-    let cookie = Cookie::build((COOKIE_NAME, token.clone()))
+fn build(secure: bool, value: String, max_age: i64) -> Cookie<'static> {
+    Cookie::build((cookie_name(secure), value))
         .path("/")
         .http_only(true)
         .secure(secure)
         .same_site(SameSite::Strict)
-        .max_age(time::Duration::seconds(MAX_AGE_SECS))
-        .build();
+        .max_age(time::Duration::seconds(max_age))
+        .build()
+}
+
+pub fn issue(jar: CookieJar, secure: bool) -> (CookieJar, String) {
+    let token = jar
+        .get(cookie_name(secure))
+        .map(|c| c.value().to_owned())
+        .filter(|t| is_well_formed(t))
+        .unwrap_or_else(new_token);
+    let cookie = build(secure, token.clone(), MAX_AGE_SECS);
     (jar.add(cookie), token)
 }
 
-/// True when the form token matches the cookie token.
-pub fn check(jar: &CookieJar, form_token: &str) -> bool {
-    let Some(cookie) = jar.get(COOKIE_NAME) else {
+pub fn clear(jar: CookieJar, secure: bool) -> CookieJar {
+    jar.add(build(secure, String::new(), 0))
+}
+
+pub fn check(jar: &CookieJar, form_token: &str, secure: bool) -> bool {
+    let Some(cookie) = jar.get(cookie_name(secure)) else {
         return false;
     };
     let c = cookie.value();
@@ -57,10 +64,33 @@ mod tests {
     #[test]
     fn issue_and_check() {
         let (jar, t) = issue(CookieJar::new(), true);
-        assert!(check(&jar, &t));
-        assert!(!check(&jar, &new_token()));
-        assert!(!check(&jar, ""));
-        assert!(!check(&CookieJar::new(), &t));
+        assert!(check(&jar, &t, true));
+        assert!(!check(&jar, &new_token(), true));
+        assert!(!check(&jar, "", true));
+        assert!(!check(&CookieJar::new(), &t, true));
+    }
+
+    #[test]
+    fn secure_cookie_uses_host_prefix() {
+        let (jar, t) = issue(CookieJar::new(), true);
+        let c = jar.get(SECURE_COOKIE_NAME).unwrap();
+        assert_eq!(c.path(), Some("/"));
+        assert_eq!(c.domain(), None);
+        assert_eq!(c.secure(), Some(true));
+        assert!(
+            !check(&jar, &t, false),
+            "dev name is not read in secure mode"
+        );
+        let (dev, t2) = issue(CookieJar::new(), false);
+        assert!(dev.get(DEV_COOKIE_NAME).is_some());
+        assert!(check(&dev, &t2, false));
+    }
+
+    #[test]
+    fn a_planted_unprefixed_cookie_is_ignored() {
+        let planted = new_token();
+        let jar = CookieJar::new().add(Cookie::new(DEV_COOKIE_NAME, planted.clone()));
+        assert!(!check(&jar, &planted, true));
     }
 
     #[test]
@@ -72,9 +102,16 @@ mod tests {
 
     #[test]
     fn replaces_malformed_cookie() {
-        let jar = CookieJar::new().add(Cookie::new(COOKIE_NAME, "short"));
+        let jar = CookieJar::new().add(Cookie::new(SECURE_COOKIE_NAME, "short"));
         let (jar, t) = issue(jar, true);
         assert_ne!(t, "short");
-        assert!(check(&jar, &t));
+        assert!(check(&jar, &t, true));
+    }
+
+    #[test]
+    fn clear_removes_token() {
+        let (jar, t) = issue(CookieJar::new(), true);
+        let jar = clear(jar, true);
+        assert!(!check(&jar, &t, true));
     }
 }

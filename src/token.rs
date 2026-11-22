@@ -1,26 +1,16 @@
-//! Session tokens: JWT claims, signing and verification.
-//!
-//! Signing sits behind [`TokenSigner`] so a later OIDC phase can swap the
-//! HS256 secret for RS256 or EdDSA keys without touching the handlers.
-
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-/// Clock leeway allowed when checking `exp`, in seconds.
 pub const LEEWAY_SECS: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claims {
     pub iss: String,
-    /// The username key from the YAML.
     pub sub: String,
-    /// Groups at login time. Informational only: verify reads live groups
-    /// from the config.
     #[serde(default)]
     pub groups: Vec<String>,
     pub iat: u64,
     pub exp: u64,
-    /// Must equal `session.version` for the token to be accepted.
     pub ver: u32,
 }
 
@@ -36,7 +26,6 @@ pub enum TokenError {
 
 pub trait TokenSigner: Send + Sync {
     fn sign(&self, claims: &Claims) -> Result<String, TokenError>;
-    /// Check signature, algorithm, issuer and expiry, and return the claims.
     fn verify(&self, token: &str) -> Result<Claims, TokenError>;
 }
 
@@ -70,8 +59,6 @@ impl TokenSigner for Hs256Signer {
     }
 
     fn verify(&self, token: &str) -> Result<Claims, TokenError> {
-        // Cookies are small; refuse anything that is obviously not ours
-        // before doing any work.
         if token.len() > 4096 {
             return Err(TokenError::Invalid);
         }
@@ -84,7 +71,6 @@ impl TokenSigner for Hs256Signer {
     }
 }
 
-/// Seconds since the Unix epoch.
 pub fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -126,7 +112,6 @@ mod tests {
         let s = Hs256Signer::new(SECRET, ISS);
         let t = s.sign(&claims(-(LEEWAY_SECS as i64) - 5)).unwrap();
         assert_eq!(s.verify(&t), Err(TokenError::Expired));
-        // Inside the leeway still passes.
         let t = s.sign(&claims(-5)).unwrap();
         assert!(s.verify(&t).is_ok());
     }

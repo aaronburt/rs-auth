@@ -18,7 +18,6 @@ pub const SECRET: &str = "test-secret-test-secret-test-secret!!";
 pub const PROXY: &str = "172.18.0.2:40000";
 pub const OUTSIDE: &str = "203.0.113.50:40000";
 
-/// Argon2id hash with tiny params so tests are quick.
 pub fn quick_hash(pw: &str) -> String {
     let params = Params::new(256, 1, 1, None).unwrap();
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
@@ -113,7 +112,6 @@ impl Resp {
             .map(|v| v.to_str().unwrap().to_owned())
             .collect()
     }
-    /// The value of a cookie set by this response.
     pub fn cookie(&self, name: &str) -> Option<String> {
         self.set_cookies().iter().find_map(|c| {
             let first = c.split(';').next()?;
@@ -121,7 +119,6 @@ impl Resp {
             (k == name).then(|| v.to_owned())
         })
     }
-    /// The value of the hidden csrf field in the page.
     pub fn csrf_field(&self) -> String {
         let i = self
             .body
@@ -167,7 +164,6 @@ pub fn post_form(uri: &str, cookies: &str, form: &[(&str, &str)]) -> Request<Bod
     b.body(Body::from(body)).unwrap()
 }
 
-/// A verify request as Traefik or Caddy would send it.
 pub fn verify_req(method: &str, host: &str, uri: &str, cookies: &str) -> Request<Body> {
     let mut b = Request::get("/api/verify")
         .header("x-forwarded-method", method)
@@ -181,16 +177,14 @@ pub fn verify_req(method: &str, host: &str, uri: &str, cookies: &str) -> Request
     b.body(Body::empty()).unwrap()
 }
 
-/// Load the login page and return (csrf cookie header, csrf form value).
 pub async fn csrf(app: &Router, peer: &str) -> (String, String) {
     let r = send(app, peer, get("/login", "")).await;
-    let cookie = r.cookie("rs_auth_csrf").expect("csrf cookie");
+    let cookie = r.cookie("__Host-rs_auth_csrf").expect("csrf cookie");
     let field = r.csrf_field();
     assert_eq!(cookie, field);
-    (format!("rs_auth_csrf={cookie}"), field)
+    (format!("__Host-rs_auth_csrf={cookie}"), field)
 }
 
-/// Sign in and return the session cookie as a `Cookie:` header value.
 pub async fn sign_in(app: &Router, user: &str, pw: &str) -> String {
     let (cookie, token) = csrf(app, PROXY).await;
     let r = send(

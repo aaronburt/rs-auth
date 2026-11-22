@@ -1,6 +1,3 @@
-//! End-to-end checks of the whole loop through the real router: verify,
-//! login, cookie, verify again, logout.
-
 mod common;
 
 use axum::http::StatusCode;
@@ -115,7 +112,7 @@ async fn login_page_basics() {
     let csrf = r
         .set_cookies()
         .into_iter()
-        .find(|c| c.starts_with("rs_auth_csrf="))
+        .find(|c| c.starts_with("__Host-rs_auth_csrf="))
         .unwrap();
     assert!(
         csrf.contains("HttpOnly") && csrf.contains("Secure") && csrf.contains("SameSite=Strict")
@@ -147,7 +144,6 @@ async fn csp_hashes_match_the_inline_style_and_script() {
 async fn full_loop() {
     let app = app();
 
-    // 1. Not signed in: verify sends the browser to login.
     let r = send(
         &app,
         PROXY,
@@ -156,7 +152,6 @@ async fn full_loop() {
     .await;
     assert_eq!(r.status, StatusCode::FOUND);
 
-    // 2. Sign in with an rd.
     let (cookie, token) = csrf(&app, PROXY).await;
     let r = send(
         &app,
@@ -192,7 +187,6 @@ async fn full_loop() {
     }
     let session = format!("rs_auth_session={}", r.cookie("rs_auth_session").unwrap());
 
-    // 3. Two different apps go straight through.
     for host in ["grafana.example.com", "photos.example.com"] {
         let r = send(&app, PROXY, verify_req("GET", host, "/", &session)).await;
         assert_eq!(r.status, StatusCode::OK);
@@ -202,7 +196,6 @@ async fn full_loop() {
         assert_eq!(r.header("remote-name"), Some("Aaron Example"));
     }
 
-    // 4. The login page skips itself when already signed in.
     let r = send(
         &app,
         PROXY,
@@ -212,7 +205,6 @@ async fn full_loop() {
     assert_eq!(r.status, StatusCode::FOUND);
     assert_eq!(r.location(), "https://photos.example.com/");
 
-    // 5. GET /logout only asks.
     let r = send(&app, PROXY, get("/logout", &session)).await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.body.contains("Sign out?"));
@@ -225,16 +217,14 @@ async fn full_loop() {
     .await;
     assert_eq!(still.status, StatusCode::OK);
 
-    // 6. POST /logout without a token is refused.
     let r2 = send(&app, PROXY, post_form("/logout", &session, &[("csrf", "")])).await;
     assert_eq!(r2.status, StatusCode::FORBIDDEN);
     assert!(r2.cookie("rs_auth_session").is_none());
 
-    // 7. POST /logout with the token clears the cookie.
     let token = r.csrf_field();
     let cookies = format!(
-        "{session}; rs_auth_csrf={}",
-        r.cookie("rs_auth_csrf").unwrap()
+        "{session}; __Host-rs_auth_csrf={}",
+        r.cookie("__Host-rs_auth_csrf").unwrap()
     );
     let r = send(
         &app,
@@ -341,7 +331,6 @@ async fn wrong_password_is_amber_and_generic() {
     assert!(r.body.contains(r#"value="aaron""#), "username is kept");
     assert!(r.cookie("rs_auth_session").is_none());
 
-    // An unknown user gets exactly the same page.
     let r2 = send(
         &app,
         PROXY,
@@ -418,7 +407,6 @@ async fn rate_limit_locks_out_per_ip_and_says_nothing_about_duration() {
     let locked = attempt("bad", "198.51.100.1").await;
     assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
 
-    // Even the right password is refused while locked.
     let r = attempt("correct horse", "198.51.100.1").await;
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
     assert!(r.cookie("rs_auth_session").is_none());
@@ -428,7 +416,6 @@ async fn rate_limit_locks_out_per_ip_and_says_nothing_about_duration() {
         assert!(page.body.contains("Too many sign-in attempts"));
         assert!(page.body.contains("<fieldset disabled>"));
         assert!(page.header("retry-after").is_none());
-        // Only the visible markup, not the stylesheet.
         let lower = page.body[page.body.find("</style>").unwrap()..].to_lowercase();
         for leak in [
             "minute",
@@ -441,14 +428,12 @@ async fn rate_limit_locks_out_per_ip_and_says_nothing_about_duration() {
         }
     }
 
-    // GET /login from that IP shows the locked state too.
     let mut req = get("/login", "");
     req.headers_mut()
         .insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
     let r = send(&app, PROXY, req).await;
     assert!(r.body.contains("Too many sign-in attempts"));
 
-    // Another client behind the same proxy is unaffected.
     let r = attempt("correct horse", "198.51.100.2").await;
     assert_eq!(r.status, StatusCode::SEE_OTHER);
 }
@@ -463,7 +448,6 @@ async fn spoofed_forwarded_for_from_untrusted_peer_is_ignored() {
             &cookie,
             &[("username", "aaron"), ("password", "bad"), ("csrf", &token)],
         );
-        // A new fake address every time must not dodge the limit.
         req.headers_mut()
             .insert("x-forwarded-for", format!("10.9.9.{i}").parse().unwrap());
         send(&app, OUTSIDE, req).await;
@@ -490,7 +474,6 @@ async fn groups_are_read_live_from_config() {
     let old = app_with(&yaml(1, "[admins]", false));
     let session = sign_in(&old, "aaron", "correct horse").await;
 
-    // Same secret, groups edited and the server restarted.
     let new = app_with(&yaml(1, "[viewers]", false));
     let r = send(
         &new,
@@ -514,7 +497,7 @@ async fn removed_user_is_rejected() {
     .await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.header("remote-name"), Some("Guest"));
-    assert!(r.header("remote-email").is_none());
+    assert_eq!(r.header("remote-email"), Some(""));
 
     let without_guest = app_with(&yaml(1, "[admins]", false));
     let r = send(
@@ -538,7 +521,6 @@ async fn bumping_session_version_logs_everyone_out() {
     )
     .await;
     assert_eq!(r.status, StatusCode::FOUND);
-    // And a fresh sign-in on v2 works.
     let s2 = sign_in(&v2, "aaron", "correct horse").await;
     let r = send(
         &v2,
@@ -553,7 +535,6 @@ async fn bumping_session_version_logs_everyone_out() {
 async fn tampered_and_foreign_cookies_are_rejected() {
     let app = app();
     let session = sign_in(&app, "aaron", "correct horse").await;
-    // Flip a character in the middle of the signature.
     let mut chars: Vec<char> = session.chars().collect();
     let i = chars.len() - 10;
     chars[i] = if chars[i] == 'A' { 'B' } else { 'A' };
@@ -573,7 +554,6 @@ async fn tampered_and_foreign_cookies_are_rejected() {
         assert_eq!(r.status, StatusCode::FOUND, "cookie {c:?} was accepted");
     }
 
-    // A token signed with a different secret.
     let other =
         yaml(1, "[admins]", false).replace(SECRET, "another-secret-another-secret-another!!");
     let other_session = sign_in(&app_with(&other), "aaron", "correct horse").await;
@@ -629,4 +609,151 @@ async fn html_in_inputs_is_escaped() {
     .await;
     assert!(!r.body.contains("<script>x</script>"));
     assert!(r.body.contains("&#60;script&#62;") || r.body.contains("&lt;script&gt;"));
+}
+
+async fn attempt(app: &axum::Router, cookie: &str, token: &str, user: &str, pw: &str) -> Resp {
+    send(
+        app,
+        PROXY,
+        post_form(
+            "/login",
+            cookie,
+            &[("username", user), ("password", pw), ("csrf", token)],
+        ),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn signing_in_does_not_reset_failed_attempts() {
+    let app = app();
+    let (cookie, token) = csrf(&app, PROXY).await;
+    for _ in 0..4 {
+        let r = attempt(&app, &cookie, &token, "aaron", "guess").await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let r = attempt(&app, &cookie, &token, "guest", "guest pass").await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER, "own account still works");
+    let (cookie, token) = csrf(&app, PROXY).await;
+    let r = attempt(&app, &cookie, &token, "aaron", "guess").await;
+    assert_eq!(
+        r.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the fifth failure must lock, even after a successful sign-in"
+    );
+}
+
+#[tokio::test]
+async fn successful_sign_ins_do_not_count_towards_the_limit() {
+    let app = app();
+    for _ in 0..8 {
+        sign_in(&app, "aaron", "correct horse").await;
+    }
+}
+
+#[tokio::test]
+async fn concurrent_burst_gets_no_more_than_the_limit() {
+    let app = app();
+    let (cookie, token) = csrf(&app, PROXY).await;
+    let mut tasks = Vec::new();
+    for i in 0..20 {
+        let (app, cookie, token) = (app.clone(), cookie.clone(), token.clone());
+        tasks.push(tokio::spawn(async move {
+            attempt(&app, &cookie, &token, "aaron", &format!("guess-{i}"))
+                .await
+                .status
+        }));
+    }
+    let mut unauthorized = 0;
+    let mut limited = 0;
+    for t in tasks {
+        match t.await.unwrap() {
+            StatusCode::UNAUTHORIZED => unauthorized += 1,
+            StatusCode::TOO_MANY_REQUESTS => limited += 1,
+            other => panic!("unexpected {other}"),
+        }
+    }
+    assert_eq!(unauthorized + limited, 20);
+    assert!(unauthorized <= 4, "{unauthorized} guesses got a plain 401");
+    assert!(limited >= 16);
+}
+
+#[tokio::test]
+async fn overlong_usernames_are_rejected_not_truncated() {
+    let y = yaml(1, "[admins]", false).replace("  aaron:\n", &format!("  {}:\n", "a".repeat(64)));
+    let app = app_with(&y);
+    let (cookie, token) = csrf(&app, PROXY).await;
+    let long = "a".repeat(65);
+    let r = attempt(&app, &cookie, &token, &long, "correct horse").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let exact = "a".repeat(64);
+    let r = attempt(&app, &cookie, &token, &exact, "correct horse").await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn csrf_cookie_is_host_only_and_rotated_after_sign_in() {
+    let app = app();
+    let r = send(&app, PROXY, get("/login", "")).await;
+    let set = r
+        .set_cookies()
+        .into_iter()
+        .find(|c| c.starts_with("__Host-rs_auth_csrf="))
+        .unwrap();
+    assert!(set.contains("Secure") && set.contains("Path=/") && !set.contains("Domain"));
+
+    let (cookie, token) = csrf(&app, PROXY).await;
+    let r = attempt(&app, &cookie, &token, "aaron", "correct horse").await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let cleared = r
+        .set_cookies()
+        .into_iter()
+        .find(|c| c.starts_with("__Host-rs_auth_csrf="))
+        .expect("csrf cookie cleared");
+    assert!(cleared.contains("Max-Age=0"));
+}
+
+#[tokio::test]
+async fn planted_unprefixed_csrf_cookie_is_not_accepted() {
+    let app = app();
+    let planted = "ab".repeat(32);
+    let r = attempt(
+        &app,
+        &format!("rs_auth_csrf={planted}"),
+        &planted,
+        "aaron",
+        "correct horse",
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn hash_permit_is_held_until_argon2_finishes() {
+    let heavy = rs_auth::password::hash("slow password").unwrap();
+    let y = yaml(1, "[admins]", false).replace(aaron_hash(), &heavy);
+    let state = rs_auth::AppState::new(config_from(&y));
+    let total = state.hash_permits.available_permits();
+    let s2 = state.clone();
+    let task = tokio::spawn(async move { s2.check_password("aaron", "x".into()).await.is_some() });
+    let mut waited = 0;
+    while state.hash_permits.available_permits() == total {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        waited += 1;
+        assert!(waited < 2000, "hash never started");
+    }
+    task.abort();
+    let _ = task.await;
+    assert_eq!(
+        state.hash_permits.available_permits(),
+        total - 1,
+        "a dropped request must not free its permit while Argon2 is still running"
+    );
+    let mut waited = 0;
+    while state.hash_permits.available_permits() < total {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        waited += 1;
+        assert!(waited < 2000, "permit never came back");
+    }
+    assert!(total <= rs_auth::state::MAX_CONCURRENT_HASHES);
 }

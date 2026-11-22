@@ -12,6 +12,10 @@ docker compose -f e2e/traefik/docker-compose.yml down
 The exit code is 0 when every check passes. The first run compiles rs-auth
 inside Docker, which takes a few minutes.
 
+CI runs the same thing on every push in the `e2e-traefik` job of
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), and prints the
+container logs if a check fails.
+
 ## What it checks
 
 1. Not signed in: apps redirect to the login page with the right `rd`,

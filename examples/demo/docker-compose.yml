@@ -1,0 +1,43 @@
+# A demo to try in your browser. No hosts-file changes needed: *.localhost
+# always points at your own machine.
+#
+#   docker compose -f examples/demo/docker-compose.yml up -d --build
+#   open https://whoami.rs-auth.localhost:8443  (accept the self-signed certificate)
+#   docker compose -f examples/demo/docker-compose.yml down
+#
+# Users: aaron / aaron-test-pass, guest / guest-test-pass
+name: rs-auth-demo
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - --entrypoints.websecure.address=:443
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --log.level=WARN
+    volumes:
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+    ports:
+      - "127.0.0.1:8443:443"
+    networks:
+      edge:
+        ipv4_address: 172.29.0.10
+
+  rs-auth:
+    build: ../..
+    environment:
+      RS_AUTH_JWT_SECRET: demo-only-secret-demo-only-secret-demo-only
+      RUST_LOG: info
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+    networks: [edge]
+
+  whoami:
+    image: traefik/whoami:v1.10
+    networks: [edge]

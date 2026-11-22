@@ -1,7 +1,4 @@
 #!/bin/sh
-# End-to-end checks of rs-auth behind Traefik. Runs inside the tester
-# container; every request goes through Traefik over https, except the
-# deliberate direct calls to rs-auth.
 set -u
 
 AUTH=https://auth.example.test
@@ -14,18 +11,16 @@ FAIL=0
 
 ok()   { PASS=$((PASS + 1)); echo "  ok   $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "  FAIL $1"; [ -n "${2:-}" ] && echo "       $2"; }
-check() { # check "name" actual expected
+check() {
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$3', got '$2'"; fi
 }
-contains() { # contains "name" file needle
+contains() {
   if grep -qiF -- "$3" "$2"; then ok "$1"; else bad "$1" "'$3' not found"; fi
 }
-lacks() { # lacks "name" file needle
+lacks() {
   if grep -qiF -- "$3" "$2"; then bad "$1" "'$3' should not be there"; else ok "$1"; fi
 }
 
-# req OUT JAR [curl args...]: writes body to OUT.body, headers to OUT.head,
-# and prints the status code. JAR may be "-" for no cookie jar.
 req() {
   out=$1; jar=$2; shift 2
   if [ "$jar" = "-" ]; then
@@ -34,14 +29,13 @@ req() {
     curl -sk -b "$TMP/$jar" -c "$TMP/$jar" -o "$TMP/$out.body" -D "$TMP/$out.head" -w '%{http_code}' "$@"
   fi
 }
-header() { # header OUT name
+header() {
   grep -i "^$2:" "$TMP/$1.head" | head -n1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'
 }
-csrf_of() { # csrf_of OUT
+csrf_of() {
   sed -n 's/.*name="csrf" value="\([0-9a-f]*\)".*/\1/p' "$TMP/$1.body" | head -n1
 }
 
-# sign_in JAR USER PASS RD -> prints status of the POST
 sign_in() {
   touch "$TMP/$1"
   req loginpage "$1" "$AUTH/login" >/dev/null

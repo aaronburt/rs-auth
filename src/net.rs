@@ -1,11 +1,8 @@
-//! Working out who is on the other end of a request.
-
 use std::net::{IpAddr, SocketAddr};
 
 use axum::http::HeaderMap;
 use ipnet::IpNet;
 
-/// Turn `::ffff:1.2.3.4` into `1.2.3.4` so IPv4 CIDRs match dual-stack peers.
 pub fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
@@ -18,41 +15,40 @@ pub fn is_trusted(trusted: &[IpNet], ip: IpAddr) -> bool {
     trusted.iter().any(|n| n.contains(&ip))
 }
 
-/// The client's IP. `X-Forwarded-For` is only believed when the direct peer
-/// is a trusted proxy, and then we walk it from the right, skipping trusted
-/// hops, so a client cannot spoof its address by sending its own header.
 pub fn client_ip(trusted: &[IpNet], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
     let peer_ip = canonical(peer.ip());
     if !is_trusted(trusted, peer_ip) {
         return peer_ip;
     }
-    let mut hops: Vec<IpAddr> = Vec::new();
-    for value in headers.get_all("x-forwarded-for") {
+    let values: Vec<_> = headers.get_all("x-forwarded-for").iter().collect();
+    let mut leftmost = None;
+    for value in values.into_iter().rev() {
         let Ok(s) = value.to_str() else {
-            return peer_ip;
+            return leftmost.unwrap_or(peer_ip);
         };
-        for part in s.split(',') {
-            match parse_hop(part) {
-                Some(ip) => hops.push(canonical(ip)),
-                None => return peer_ip,
+        for part in s.rsplit(',') {
+            let Some(ip) = parse_hop(part) else {
+                return leftmost.unwrap_or(peer_ip);
+            };
+            let ip = canonical(ip);
+            if !is_trusted(trusted, ip) {
+                return ip;
             }
+            leftmost = Some(ip);
         }
     }
-    for ip in hops.iter().rev() {
-        if !is_trusted(trusted, *ip) {
-            return *ip;
-        }
-    }
-    // Every hop is trusted: use the left-most one, else the peer.
-    hops.first().copied().unwrap_or(peer_ip)
+    leftmost.unwrap_or(peer_ip)
 }
 
 fn parse_hop(s: &str) -> Option<IpAddr> {
     let s = s.trim();
-    if let Ok(ip) = s.parse::<IpAddr>() {
+    let bare = s
+        .strip_prefix('[')
+        .and_then(|x| x.strip_suffix(']'))
+        .unwrap_or(s);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
         return Some(ip);
     }
-    // Some proxies add a port: 1.2.3.4:5678 or [::1]:5678.
     s.parse::<SocketAddr>().ok().map(|a| a.ip())
 }
 
@@ -97,6 +93,48 @@ mod tests {
     fn garbage_header_falls_back_to_peer() {
         let peer: SocketAddr = "172.18.0.2:1234".parse().unwrap();
         assert_eq!(client_ip(&nets(), peer, &hdrs("not-an-ip")), peer.ip());
+    }
+
+    #[test]
+    fn garbage_left_of_the_real_client_is_ignored() {
+        let peer: SocketAddr = "172.18.0.2:1234".parse().unwrap();
+        let ip = client_ip(&nets(), peer, &hdrs("not-an-ip, 198.51.100.7"));
+        assert_eq!(ip, "198.51.100.7".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn several_headers_are_read_right_to_left() {
+        let peer: SocketAddr = "172.18.0.2:1234".parse().unwrap();
+        let mut h = HeaderMap::new();
+        h.append("x-forwarded-for", HeaderValue::from_static("6.6.6.6"));
+        h.append(
+            "x-forwarded-for",
+            HeaderValue::from_static("198.51.100.7, 172.18.0.9"),
+        );
+        assert_eq!(
+            client_ip(&nets(), peer, &h),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn all_trusted_hops_use_the_leftmost() {
+        let peer: SocketAddr = "172.18.0.2:1234".parse().unwrap();
+        let ip = client_ip(&nets(), peer, &hdrs("172.18.0.50, 172.18.0.9"));
+        assert_eq!(ip, "172.18.0.50".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn bracketed_ipv6_hops() {
+        let peer: SocketAddr = "172.18.0.2:1234".parse().unwrap();
+        assert_eq!(
+            client_ip(&nets(), peer, &hdrs("[2001:db8::1]")),
+            "2001:db8::1".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            client_ip(&nets(), peer, &hdrs("[2001:db8::1]:443")),
+            "2001:db8::1".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]

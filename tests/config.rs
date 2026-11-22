@@ -1,5 +1,3 @@
-//! Bad configs are rejected with a useful message; good ones load.
-
 mod common;
 
 use std::path::Path;
@@ -31,7 +29,6 @@ fn example_loads() {
         c.server.default_redirect_url.as_str(),
         "https://auth.example.com/logged-in"
     );
-    // An inline secret works but warns.
     assert!(loaded.warnings.iter().any(|w| w.contains("jwt_secret")));
 }
 
@@ -120,9 +117,11 @@ fn secret_sources_in_order_file_env_inline() {
         env_secret.as_bytes(),
         "env beats inline"
     );
-    assert!(c.warnings.is_empty(), "no inline warning when env is used");
+    assert!(
+        !c.warnings.iter().any(|w| w.contains("jwt_secret")),
+        "no inline warning when env is used"
+    );
 
-    // A secret file that cannot be read is an error, not a silent fallback.
     let e = Config::from_yaml(
         &with_file,
         &FakeEnv {
@@ -197,8 +196,13 @@ fn zero_attempts_and_no_users_are_rejected() {
 
 #[test]
 fn cookie_name_cannot_clash_with_csrf_cookie() {
-    let y = base().replace("session:\n", "session:\n  cookie_name: rs_auth_csrf\n");
-    assert!(err(&y).contains("CSRF"));
+    for name in ["rs_auth_csrf", "__Host-rs_auth_csrf"] {
+        let y = base().replace(
+            "session:\n",
+            &format!("session:\n  cookie_name: \"{name}\"\n"),
+        );
+        assert!(err(&y).contains("CSRF"), "{name} should be rejected");
+    }
 }
 
 #[test]
@@ -214,7 +218,6 @@ fn default_redirect_must_be_inside_domain() {
 fn shipped_example_config_parses_apart_from_placeholder_hashes() {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.yaml"))
         .unwrap();
-    // The example carries placeholder hashes; swap in real ones to check the rest.
     let re_hash = |s: &str| {
         s.lines()
             .map(|l| {
@@ -246,4 +249,41 @@ impl Environment for FakeEnvSecret {
 fn utf8_bom_is_accepted() {
     let with_bom = format!("\u{FEFF}{}", base());
     assert!(Config::from_yaml(&with_bom, &NoEnv).is_ok());
+}
+
+#[test]
+fn ip_and_malformed_domains_are_rejected() {
+    for bad in ["10.0.0.1", "example..com", "-example.com", "example-.com"] {
+        let y = base().replace("domain: example.com", &format!("domain: \"{bad}\""));
+        assert!(
+            Config::from_yaml(&y, &NoEnv).is_err(),
+            "{bad} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn malformed_emails_are_rejected() {
+    for bad in ["@example.com", "aaron@", "a@b@c"] {
+        let y = base().replace("aaron@example.com", &format!("\"{bad}\""));
+        assert!(err(&y).contains("email"), "{bad} should be rejected");
+    }
+}
+
+#[test]
+fn ipv4_mapped_trusted_proxies_are_normalised() {
+    let y = base().replace("[172.18.0.0/16, \"::1\"]", "[\"::ffff:172.18.0.0/112\"]");
+    let c = config_from(&y);
+    assert_eq!(c.server.trusted_proxies[0].to_string(), "172.18.0.0/16");
+    let peer: std::net::IpAddr = "172.18.0.2".parse().unwrap();
+    assert!(rs_auth::net::is_trusted(&c.server.trusted_proxies, peer));
+}
+
+#[test]
+fn weak_argon2_settings_warn() {
+    let loaded = Config::from_yaml(&base(), &NoEnv).unwrap();
+    assert!(
+        loaded.warnings.iter().any(|w| w.contains("weak Argon2")),
+        "test hashes use tiny params, so they should warn"
+    );
 }

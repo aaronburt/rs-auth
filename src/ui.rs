@@ -1,6 +1,3 @@
-//! The portal's pages: inline CSS and script, the Content-Security-Policy that
-//! allows exactly those, and the askama templates.
-
 use std::sync::LazyLock;
 
 use askama::Template;
@@ -8,7 +5,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use sha2::{Digest, Sha256};
 
-/// All page styles. Colours live once as custom properties, with a dark set.
 pub const CSS: &str = r#"
 :root{color-scheme:light dark;
 --bg:#F3F4F6;--card:#FFFFFF;--card-border:#D1D5DB;--text:#111827;--muted:#4B5563;
@@ -71,8 +67,6 @@ input,.btn{height:48px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 "#;
 
-/// The only script: makes the Show password button work. The page works
-/// without it; the button stays hidden when scripts are off.
 pub const SCRIPT: &str = r#"
 document.querySelectorAll('[data-reveal]').forEach(function(b){
 var i=document.getElementById(b.getAttribute('data-reveal'));if(!i)return;b.hidden=false;
@@ -85,9 +79,6 @@ fn sha256_b64(s: &str) -> String {
     STANDARD.encode(Sha256::digest(s.as_bytes()))
 }
 
-/// CSP for every portal page: nothing loads except the hashed inline style
-/// and script. `form-action` is left unset on purpose, because Chrome applies
-/// it to the redirect after a sign-in, which goes to another subdomain.
 pub static CSP: LazyLock<String> = LazyLock::new(|| {
     format!(
         "default-src 'none'; style-src 'sha256-{}'; script-src 'sha256-{}'; img-src 'self'; \
@@ -97,15 +88,11 @@ pub static CSP: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// What the sign-in card shows above the form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginState {
     Normal,
-    /// Amber: the user can just try again.
     WrongPassword,
-    /// Amber: the CSRF token was missing or stale.
     FormExpired,
-    /// Red: too many attempts from this IP. Says nothing about how long.
     LockedOut,
 }
 
@@ -115,7 +102,6 @@ pub struct LoginPage<'a> {
     pub css: &'a str,
     pub script: &'a str,
     pub state: LoginState,
-    /// Host of the app being signed in to, if known.
     pub target_host: Option<String>,
     pub rd: String,
     pub csrf: String,
@@ -155,7 +141,6 @@ pub struct SignedInPage<'a> {
     pub username: String,
 }
 
-/// Values every login page needs.
 pub fn login_page(
     state: LoginState,
     target_host: Option<String>,

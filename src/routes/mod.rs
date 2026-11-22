@@ -1,5 +1,3 @@
-//! HTTP routes.
-
 mod health;
 mod login;
 mod logout;
@@ -19,7 +17,6 @@ use tower_http::trace::TraceLayer;
 use crate::state::SharedState;
 use crate::ui;
 
-/// Largest request body accepted. Login and logout forms are tiny.
 const BODY_LIMIT: usize = 16 * 1024;
 
 pub fn router(state: SharedState) -> Router {
@@ -61,7 +58,6 @@ async fn security_headers(mut res: Response) -> Response {
     res
 }
 
-/// Render a template, or answer 500 if that somehow fails.
 fn render(status: StatusCode, t: &impl Template) -> Response {
     match t.render() {
         Ok(body) => (status, Html(body)).into_response(),
@@ -72,7 +68,6 @@ fn render(status: StatusCode, t: &impl Template) -> Response {
     }
 }
 
-/// A redirect with the given status code (302, 303).
 fn redirect(status: StatusCode, location: &str) -> Response {
     match HeaderValue::from_str(location) {
         Ok(v) => (status, [(header::LOCATION, v)]).into_response(),

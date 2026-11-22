@@ -1,9 +1,3 @@
-//! Loading and validating `config.yaml`.
-//!
-//! The raw YAML is parsed into the `Raw*` structs, then checked and turned
-//! into a [`Config`] that the rest of the program can trust: every rule the
-//! plan lists is enforced here, so a server that starts has a sane config.
-
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
@@ -16,9 +10,7 @@ use url::Url;
 
 use crate::password;
 
-/// Minimum length of the JWT signing secret, in bytes.
 pub const MIN_SECRET_LEN: usize = 32;
-/// Environment variable that may hold the JWT secret.
 pub const SECRET_ENV: &str = "RS_AUTH_JWT_SECRET";
 
 #[derive(Debug, thiserror::Error)]
@@ -29,7 +21,7 @@ pub enum ConfigError {
         error: std::io::Error,
     },
     #[error("config is not valid YAML: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_yaml_ng::Error),
     #[error("{0}")]
     Invalid(String),
 }
@@ -38,11 +30,6 @@ fn invalid<T>(msg: impl Into<String>) -> Result<T, ConfigError> {
     Err(ConfigError::Invalid(msg.into()))
 }
 
-// ---------------------------------------------------------------------------
-// Durations like 30s, 30m, 12h, 7d
-// ---------------------------------------------------------------------------
-
-/// A duration written as a number and a unit: `45s`, `30m`, `12h` or `7d`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct HumanDuration(pub Duration);
 
@@ -90,10 +77,6 @@ impl<'de> Deserialize<'de> for HumanDuration {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Raw YAML shape
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
@@ -114,7 +97,6 @@ struct RawServer {
     trusted_proxies: Vec<String>,
     #[serde(default)]
     default_redirect_url: Option<String>,
-    /// Development only: drop the `Secure` cookie flag and allow http URLs.
     #[serde(default)]
     insecure_dev_mode: bool,
 }
@@ -186,10 +168,6 @@ struct RawUser {
     password: String,
 }
 
-// ---------------------------------------------------------------------------
-// Validated config
-// ---------------------------------------------------------------------------
-
 #[derive(Clone)]
 pub struct Config {
     pub server: ServerConfig,
@@ -201,7 +179,6 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub address: SocketAddr,
-    /// Public URL of the portal, always the root of its host.
     pub portal_url: Url,
     pub trusted_proxies: Vec<IpNet>,
     pub default_redirect_url: Url,
@@ -210,12 +187,10 @@ pub struct ServerConfig {
 
 #[derive(Clone)]
 pub struct SessionConfig {
-    /// Lower-case cookie domain, e.g. `example.com`.
     pub domain: String,
     pub cookie_name: String,
     pub version: u32,
     pub expiry: Duration,
-    /// The JWT signing secret. Never printed by `Debug`.
     pub secret: Vec<u8>,
 }
 
@@ -242,7 +217,6 @@ pub struct User {
     pub display_name: String,
     pub email: Option<String>,
     pub groups: Vec<String>,
-    /// Argon2id PHC string.
     pub password_hash: String,
 }
 
@@ -268,14 +242,12 @@ impl fmt::Debug for Config {
     }
 }
 
-/// A config plus any non-fatal warnings found while loading it.
 #[derive(Debug)]
 pub struct Loaded {
     pub config: Config,
     pub warnings: Vec<String>,
 }
 
-/// Where the loader looks things up outside the YAML. Tests swap this out.
 pub trait Environment {
     fn var(&self, name: &str) -> Option<String>;
     fn read_file(&self, path: &Path) -> std::io::Result<Vec<u8>>;
@@ -293,7 +265,6 @@ impl Environment for RealEnvironment {
 }
 
 impl Config {
-    /// Read, parse and validate the config file at `path`.
     pub fn load_file(path: &Path) -> Result<Loaded, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
             path: path.to_owned(),
@@ -306,14 +277,11 @@ impl Config {
         Ok(loaded)
     }
 
-    /// Parse and validate YAML text.
     pub fn from_yaml(text: &str, env: &dyn Environment) -> Result<Loaded, ConfigError> {
-        // Windows editors and PowerShell often save UTF-8 with a BOM.
         let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
-        let raw: RawConfig = serde_yaml::from_str(text)?;
+        let raw: RawConfig = serde_yaml_ng::from_str(text)?;
         let mut warnings = Vec::new();
 
-        // --- server -------------------------------------------------------
         let insecure = raw.server.insecure_dev_mode;
         if insecure {
             warnings.push(
@@ -343,7 +311,6 @@ impl Config {
             trusted_proxies.push(parse_net(p)?);
         }
 
-        // --- session ------------------------------------------------------
         let domain = raw
             .session
             .domain
@@ -356,9 +323,17 @@ impl Config {
                 raw.session.domain
             ));
         }
+        if domain.parse::<std::net::IpAddr>().is_ok() {
+            return invalid(format!(
+                "session.domain {domain:?} must be a domain name, not an IP address"
+            ));
+        }
         if domain
             .chars()
             .any(|c| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+            || !domain
+                .split('.')
+                .all(|l| !l.is_empty() && !l.starts_with('-') && !l.ends_with('-'))
         {
             return invalid(format!(
                 "session.domain {domain:?} has characters that are not allowed"
@@ -398,14 +373,23 @@ impl Config {
         {
             return invalid("session.cookie_name may only use letters, digits, '_' and '-'");
         }
-        if cookie_name == crate::csrf::COOKIE_NAME {
+        if cookie_name == crate::csrf::SECURE_COOKIE_NAME
+            || cookie_name == crate::csrf::DEV_COOKIE_NAME
+        {
             return invalid(format!(
-                "session.cookie_name cannot be {:?}, which rs-auth uses for its CSRF cookie",
-                crate::csrf::COOKIE_NAME
+                "session.cookie_name cannot be {cookie_name:?}, which rs-auth uses for its CSRF cookie"
             ));
         }
 
         let secret = resolve_secret(&raw.session, env, &mut warnings)?;
+        if let Some(w) = raw
+            .session
+            .jwt_secret_file
+            .as_deref()
+            .and_then(permission_warning)
+        {
+            warnings.push(w);
+        }
 
         let expiry = raw.session.expiry.0;
         if expiry < Duration::from_secs(60) {
@@ -415,12 +399,10 @@ impl Config {
             return invalid("session.expiry must be at most 400d");
         }
 
-        // --- login --------------------------------------------------------
         if raw.login.max_attempts == 0 {
             return invalid("login.max_attempts must be at least 1");
         }
 
-        // --- users --------------------------------------------------------
         if raw.users.is_empty() {
             return invalid("users must list at least one user");
         }
@@ -429,6 +411,11 @@ impl Config {
             validate_username(&name)?;
             if let Err(e) = password::check_phc(&u.password) {
                 return invalid(format!("users.{name}.password: {e}"));
+            }
+            if password::weak_params(&u.password) {
+                warnings.push(format!(
+                    "users.{name}.password uses weak Argon2 settings. Re-hash it with `rs-auth hash-password`."
+                ));
             }
             for g in &u.groups {
                 if g.is_empty()
@@ -446,7 +433,9 @@ impl Config {
             }
             if let Some(email) = &u.email
                 && (email.chars().any(|c| c.is_control() || c.is_whitespace())
-                    || !email.contains('@'))
+                    || !email
+                        .split_once('@')
+                        .is_some_and(|(l, r)| !l.is_empty() && !r.is_empty() && !r.contains('@')))
             {
                 return invalid(format!(
                     "users.{name}.email {email:?} does not look like an email address"
@@ -489,7 +478,6 @@ impl Config {
         })
     }
 
-    /// The JWT issuer: the portal's origin, e.g. `https://auth.example.com`.
     pub fn issuer(&self) -> String {
         self.server.portal_url.origin().ascii_serialization()
     }
@@ -517,13 +505,24 @@ fn parse_url(field: &str, s: &str, insecure: bool) -> Result<Url, ConfigError> {
     Ok(u)
 }
 
+fn unmap(n: IpNet) -> IpNet {
+    if let IpNet::V6(v6) = n
+        && v6.prefix_len() >= 96
+        && let Some(v4) = v6.network().to_ipv4_mapped()
+        && let Ok(net) = ipnet::Ipv4Net::new(v4, v6.prefix_len() - 96)
+    {
+        return IpNet::V4(net);
+    }
+    n
+}
+
 fn parse_net(s: &str) -> Result<IpNet, ConfigError> {
     let s = s.trim();
     if let Ok(n) = s.parse::<IpNet>() {
-        return Ok(n.trunc());
+        return Ok(unmap(n.trunc()));
     }
     if let Ok(ip) = s.parse::<std::net::IpAddr>() {
-        return Ok(IpNet::from(ip));
+        return Ok(unmap(IpNet::from(ip)));
     }
     invalid(format!(
         "server.trusted_proxies entry {s:?} is not an IP address or CIDR"
@@ -586,7 +585,6 @@ fn trim_trailing_newline(mut b: Vec<u8>) -> Vec<u8> {
     b
 }
 
-/// True when `host` is `domain` or a subdomain of it. Both must be lower case.
 pub fn host_in_domain(host: &str, domain: &str) -> bool {
     host == domain
         || (host.len() > domain.len() + 1

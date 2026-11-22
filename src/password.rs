@@ -1,20 +1,14 @@
-//! Argon2id password hashing and verification.
-
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::{Algorithm, Argon2, Params, Version};
 
-/// Longest password we will hash. Anything longer is rejected without
-/// running Argon2, so a huge form body cannot burn CPU.
 pub const MAX_PASSWORD_LEN: usize = 1024;
 
-/// The parameters `hash-password` uses: Argon2id, 64 MiB, 3 passes, 4 lanes.
 fn hasher() -> Argon2<'static> {
     let params = Params::new(64 * 1024, 3, 4, None).expect("static argon2 params");
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
 }
 
-/// Hash a password into an Argon2id PHC string with a fresh random salt.
 pub fn hash(password: &str) -> Result<String, String> {
     if password.is_empty() {
         return Err("password must not be empty".into());
@@ -28,7 +22,6 @@ pub fn hash(password: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Check that `phc` is a well-formed Argon2id PHC string.
 pub fn check_phc(phc: &str) -> Result<(), String> {
     let parsed = PasswordHash::new(phc).map_err(|_| {
         "must be an Argon2id hash from `rs-auth hash-password` (plain-text passwords are not accepted)"
@@ -43,12 +36,10 @@ pub fn check_phc(phc: &str) -> Result<(), String> {
     if parsed.hash.is_none() || parsed.salt.is_none() {
         return Err("is missing its salt or hash".into());
     }
-    // Make sure the params are ones argon2 can actually run.
     Params::try_from(&parsed).map_err(|e| format!("has bad parameters: {e}"))?;
     Ok(())
 }
 
-/// Verify `password` against a PHC string. Comparison is constant time.
 pub fn verify(password: &str, phc: &str) -> bool {
     if password.len() > MAX_PASSWORD_LEN {
         return false;
@@ -61,12 +52,26 @@ pub fn verify(password: &str, phc: &str) -> bool {
     }
 }
 
-/// A hash of a random password, used for unknown usernames so a miss costs
-/// the same time as a wrong password.
-pub fn dummy_hash() -> String {
+pub fn dummy_hash(like: Option<&str>) -> String {
     let random: [u8; 24] = rand::random();
     let pw: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    hash(&pw).expect("hashing a random password")
+    let params = like
+        .and_then(|phc| PasswordHash::new(phc).ok())
+        .and_then(|parsed| Params::try_from(&parsed).ok());
+    match params {
+        Some(p) => Argon2::new(Algorithm::Argon2id, Version::V0x13, p)
+            .hash_password(pw.as_bytes())
+            .map(|h| h.to_string())
+            .unwrap_or_else(|_| hash(&pw).expect("hashing a random password")),
+        None => hash(&pw).expect("hashing a random password"),
+    }
+}
+
+pub fn weak_params(phc: &str) -> bool {
+    PasswordHash::new(phc)
+        .ok()
+        .and_then(|parsed| Params::try_from(&parsed).ok())
+        .is_some_and(|p| p.m_cost() < 19_456 || p.t_cost() < 2)
 }
 
 #[cfg(test)]
@@ -97,6 +102,19 @@ mod tests {
         );
         assert!(check_phc("$2b$12$abcdefghijklmnopqrstuv").is_err());
         assert!(!verify("x", "not a hash"));
+    }
+
+    #[test]
+    fn dummy_hash_copies_params() {
+        let params = Params::new(256, 1, 1, None).unwrap();
+        let user = Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+            .hash_password(b"x")
+            .unwrap()
+            .to_string();
+        assert!(dummy_hash(Some(&user)).starts_with("$argon2id$v=19$m=256,t=1,p=1$"));
+        assert!(dummy_hash(None).starts_with("$argon2id$v=19$m=65536,t=3,p=4$"));
+        assert!(weak_params(&user));
+        assert!(!weak_params(&hash("x").unwrap()));
     }
 
     #[test]

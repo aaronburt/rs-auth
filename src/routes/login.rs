@@ -1,5 +1,3 @@
-//! `GET /login`, `POST /login` and the default `GET /logged-in` page.
-
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Form, Query, State};
@@ -9,10 +7,13 @@ use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
 use super::{redirect, render};
+use crate::ratelimit::Attempt;
 use crate::state::SharedState;
 use crate::token::{self, Claims};
 use crate::ui::{self, LoginState};
 use crate::{cookie, csrf, net, password, redirect as rd};
+
+const MAX_USERNAME_LEN: usize = 64;
 
 #[derive(Debug, Deserialize)]
 pub struct RdQuery {
@@ -32,7 +33,6 @@ pub struct LoginForm {
     rd: String,
 }
 
-/// The `rd` value to carry in the form, and the host to show the user.
 fn rd_parts(state: &SharedState, rd: Option<&str>) -> (String, Option<String>) {
     match rd.and_then(|r| rd::validate_rd(&state.config, r)) {
         Some(u) => {
@@ -92,12 +92,14 @@ pub async fn submit(
     Form(form): Form<LoginForm>,
 ) -> Response {
     let config = &state.config;
+    let secure = !config.server.insecure_dev_mode;
     let ip = net::client_ip(&config.server.trusted_proxies, peer, &headers);
     let rd = Some(form.rd.as_str()).filter(|r| !r.is_empty());
-    let username: String = form.username.trim().chars().take(64).collect();
+    let raw_username = form.username.trim();
+    let shown: String = raw_username.chars().take(MAX_USERNAME_LEN).collect();
 
     if state.limiter.is_locked(ip) {
-        tracing::warn!(%ip, user = %username, "sign-in refused: rate limit");
+        tracing::warn!(%ip, user = %shown, "sign-in refused: rate limit");
         return page(
             &state,
             jar,
@@ -108,7 +110,7 @@ pub async fn submit(
         );
     }
 
-    if !csrf::check(&jar, &form.csrf) {
+    if !csrf::check(&jar, &form.csrf, secure) {
         tracing::info!(%ip, "sign-in form had a missing or stale CSRF token");
         return page(
             &state,
@@ -116,19 +118,14 @@ pub async fn submit(
             StatusCode::FORBIDDEN,
             LoginState::FormExpired,
             rd,
-            username,
+            shown,
         );
     }
 
-    let ok = !username.is_empty()
-        && !form.password.is_empty()
-        && form.password.len() <= password::MAX_PASSWORD_LEN
-        && state.check_password(&username, form.password).await;
-
-    if !ok {
-        let locked = state.limiter.record_failure(ip);
-        if locked {
-            tracing::warn!(%ip, user = %username, "sign-in failed; IP is now rate limited");
+    let (at, locked_after) = match state.limiter.try_attempt(ip) {
+        Attempt::Allowed { at, locked_after } => (at, locked_after),
+        Attempt::Locked => {
+            tracing::warn!(%ip, user = %shown, "sign-in refused: rate limit");
             return page(
                 &state,
                 jar,
@@ -138,19 +135,43 @@ pub async fn submit(
                 String::new(),
             );
         }
-        tracing::warn!(%ip, user = %username, "sign-in failed");
+    };
+
+    let well_formed = !raw_username.is_empty()
+        && raw_username.len() <= MAX_USERNAME_LEN
+        && !form.password.is_empty()
+        && form.password.len() <= password::MAX_PASSWORD_LEN;
+    let user = if well_formed {
+        state.check_password(raw_username, form.password).await
+    } else {
+        None
+    };
+
+    let Some(user) = user else {
+        if locked_after {
+            tracing::warn!(%ip, user = %shown, "sign-in failed; IP is now rate limited");
+            return page(
+                &state,
+                jar,
+                StatusCode::TOO_MANY_REQUESTS,
+                LoginState::LockedOut,
+                rd,
+                String::new(),
+            );
+        }
+        tracing::warn!(%ip, user = %shown, "sign-in failed");
         return page(
             &state,
             jar,
             StatusCode::UNAUTHORIZED,
             LoginState::WrongPassword,
             rd,
-            username,
+            shown,
         );
-    }
+    };
 
-    state.limiter.clear(ip);
-    let user = &config.users[&username];
+    state.limiter.refund(ip, at);
+    let username = raw_username.to_owned();
     let now = token::now();
     let claims = Claims {
         iss: config.issuer(),
@@ -169,11 +190,10 @@ pub async fn submit(
     };
     tracing::info!(%ip, user = %username, "signed in");
     let to = rd::target(config, rd);
-    let jar = jar.add(cookie::session(config, token));
+    let jar = csrf::clear(jar, secure).add(cookie::session(config, token));
     (jar, redirect(StatusCode::SEE_OTHER, to.as_str())).into_response()
 }
 
-/// Where a sign-in without an `rd` lands.
 pub async fn signed_in(State(state): State<SharedState>, jar: CookieJar) -> Response {
     let Some(s) = state.session_user(&jar) else {
         return Redirect::to("/login").into_response();

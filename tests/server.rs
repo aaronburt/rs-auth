@@ -1,6 +1,3 @@
-//! Boots the real server on a TCP port and talks plain HTTP to it, to check
-//! the binary's wiring (connect info, routing, headers) end to end.
-
 mod common;
 
 use std::net::SocketAddr;
@@ -18,7 +15,6 @@ async fn raw(addr: SocketAddr, request: &str) -> String {
 
 #[tokio::test]
 async fn real_socket_round_trip() {
-    // Trust only loopback so the test client acts as the proxy.
     let y = yaml(1, "[admins]", false).replace("[172.18.0.0/16, \"::1\"]", "[127.0.0.1/32]");
     let app = app_with(&y);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

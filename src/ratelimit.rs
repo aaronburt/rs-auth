@@ -1,93 +1,146 @@
-//! Per-IP limit on failed sign-in attempts.
-//!
-//! Each client IP may fail `max_attempts` times within a sliding `window`.
-//! Once it hits the limit it is locked out until its oldest failure falls out
-//! of the window. A successful sign-in clears that IP's failures. The limit is
-//! per IP only, so it reveals nothing about whether a username exists.
-
 use std::collections::{HashMap, VecDeque};
-use std::net::IpAddr;
-use std::sync::Mutex;
+use std::net::{IpAddr, Ipv6Addr};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-/// How many tracked IPs trigger a sweep of stale entries.
 const SWEEP_THRESHOLD: usize = 10_000;
+const SWEEP_COOLDOWN: Duration = Duration::from_secs(10);
+const MAX_ENTRIES: usize = 50_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempt {
+    Locked,
+    Allowed { at: Instant, locked_after: bool },
+}
+
+struct Inner {
+    attempts: HashMap<IpAddr, VecDeque<Instant>>,
+    last_sweep: Option<Instant>,
+}
 
 pub struct RateLimiter {
     max_attempts: usize,
     window: Duration,
-    failures: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    max_entries: usize,
+    inner: Mutex<Inner>,
+}
+
+pub fn key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (!0u128 << 64))),
+        },
+    }
+}
+
+fn prune(q: &mut VecDeque<Instant>, now: Instant, window: Duration) {
+    while q.front().is_some_and(|t| now.duration_since(*t) >= window) {
+        q.pop_front();
+    }
 }
 
 impl RateLimiter {
     pub fn new(max_attempts: u32, window: Duration) -> Self {
+        Self::with_capacity(max_attempts, window, MAX_ENTRIES)
+    }
+
+    pub fn with_capacity(max_attempts: u32, window: Duration, max_entries: usize) -> Self {
         Self {
             max_attempts: max_attempts.max(1) as usize,
             window,
-            failures: Mutex::new(HashMap::new()),
+            max_entries: max_entries.max(1),
+            inner: Mutex::new(Inner {
+                attempts: HashMap::new(),
+                last_sweep: None,
+            }),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<IpAddr, VecDeque<Instant>>> {
-        // A panic while holding the lock cannot leave the map in a bad
-        // state, so recover rather than propagate the poison.
-        self.failures.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn prune(q: &mut VecDeque<Instant>, now: Instant, window: Duration) {
-        while q.front().is_some_and(|t| now.duration_since(*t) >= window) {
-            q.pop_front();
+    fn sweep(&self, inner: &mut Inner, now: Instant, force: bool) {
+        let due = inner
+            .last_sweep
+            .is_none_or(|t| now.duration_since(t) >= SWEEP_COOLDOWN);
+        if !(force || due) {
+            return;
         }
+        let window = self.window;
+        inner.attempts.retain(|_, q| {
+            prune(q, now, window);
+            !q.is_empty()
+        });
+        inner.last_sweep = Some(now);
     }
 
-    /// True when `ip` has used up its attempts.
     pub fn is_locked(&self, ip: IpAddr) -> bool {
         self.is_locked_at(ip, Instant::now())
     }
 
     pub fn is_locked_at(&self, ip: IpAddr, now: Instant) -> bool {
-        let mut map = self.lock();
-        let Some(q) = map.get_mut(&ip) else {
+        let k = key(ip);
+        let mut inner = self.lock();
+        let Some(q) = inner.attempts.get_mut(&k) else {
             return false;
         };
-        Self::prune(q, now, self.window);
+        prune(q, now, self.window);
         if q.is_empty() {
-            map.remove(&ip);
+            inner.attempts.remove(&k);
             return false;
         }
         q.len() >= self.max_attempts
     }
 
-    /// Record a failed attempt. Returns true if `ip` is now locked out.
-    pub fn record_failure(&self, ip: IpAddr) -> bool {
-        self.record_failure_at(ip, Instant::now())
+    pub fn try_attempt(&self, ip: IpAddr) -> Attempt {
+        self.try_attempt_at(ip, Instant::now())
     }
 
-    pub fn record_failure_at(&self, ip: IpAddr, now: Instant) -> bool {
-        let mut map = self.lock();
-        if map.len() >= SWEEP_THRESHOLD {
-            let window = self.window;
-            map.retain(|_, q| {
-                Self::prune(q, now, window);
-                !q.is_empty()
-            });
+    pub fn try_attempt_at(&self, ip: IpAddr, now: Instant) -> Attempt {
+        let k = key(ip);
+        let mut inner = self.lock();
+        if !inner.attempts.contains_key(&k) {
+            if inner.attempts.len() >= SWEEP_THRESHOLD.min(self.max_entries) {
+                self.sweep(&mut inner, now, false);
+            }
+            if inner.attempts.len() >= self.max_entries {
+                self.sweep(&mut inner, now, true);
+                if inner.attempts.len() >= self.max_entries {
+                    return Attempt::Locked;
+                }
+            }
         }
-        let q = map.entry(ip).or_default();
-        Self::prune(q, now, self.window);
-        if q.len() < self.max_attempts {
-            q.push_back(now);
+        let q = inner.attempts.entry(k).or_default();
+        prune(q, now, self.window);
+        if q.len() >= self.max_attempts {
+            return Attempt::Locked;
         }
-        q.len() >= self.max_attempts
+        q.push_back(now);
+        Attempt::Allowed {
+            at: now,
+            locked_after: q.len() >= self.max_attempts,
+        }
     }
 
-    /// Forget an IP's failures after a successful sign-in.
-    pub fn clear(&self, ip: IpAddr) {
-        self.lock().remove(&ip);
+    pub fn refund(&self, ip: IpAddr, at: Instant) {
+        let k = key(ip);
+        let mut inner = self.lock();
+        if let Some(q) = inner.attempts.get_mut(&k) {
+            if let Some(i) = q.iter().rposition(|t| *t == at) {
+                q.remove(i);
+            }
+            if q.is_empty() {
+                inner.attempts.remove(&k);
+            }
+        }
     }
 
     #[cfg(test)]
     fn tracked(&self) -> usize {
-        self.lock().len()
+        self.lock().attempts.len()
     }
 }
 
@@ -99,16 +152,38 @@ mod tests {
         IpAddr::from([10, 0, 0, n])
     }
 
+    fn fail(rl: &RateLimiter, ip: IpAddr, t: Instant) -> Attempt {
+        rl.try_attempt_at(ip, t)
+    }
+
     #[test]
-    fn locks_after_max_failures() {
+    fn locks_after_max_attempts() {
         let rl = RateLimiter::new(3, Duration::from_secs(60));
         let t = Instant::now();
-        assert!(!rl.record_failure_at(ip(1), t));
-        assert!(!rl.record_failure_at(ip(1), t));
+        assert!(matches!(
+            fail(&rl, ip(1), t),
+            Attempt::Allowed {
+                locked_after: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            fail(&rl, ip(1), t),
+            Attempt::Allowed {
+                locked_after: false,
+                ..
+            }
+        ));
         assert!(!rl.is_locked_at(ip(1), t));
-        assert!(rl.record_failure_at(ip(1), t));
+        assert!(matches!(
+            fail(&rl, ip(1), t),
+            Attempt::Allowed {
+                locked_after: true,
+                ..
+            }
+        ));
         assert!(rl.is_locked_at(ip(1), t));
-        // Other IPs are unaffected.
+        assert_eq!(fail(&rl, ip(1), t), Attempt::Locked);
         assert!(!rl.is_locked_at(ip(2), t));
     }
 
@@ -116,43 +191,105 @@ mod tests {
     fn unlocks_when_window_passes() {
         let rl = RateLimiter::new(2, Duration::from_secs(60));
         let t = Instant::now();
-        rl.record_failure_at(ip(1), t);
-        rl.record_failure_at(ip(1), t + Duration::from_secs(10));
+        fail(&rl, ip(1), t);
+        fail(&rl, ip(1), t + Duration::from_secs(10));
         assert!(rl.is_locked_at(ip(1), t + Duration::from_secs(30)));
-        // The first failure expires at t+60, freeing one attempt.
         assert!(!rl.is_locked_at(ip(1), t + Duration::from_secs(60)));
         assert!(!rl.is_locked_at(ip(1), t + Duration::from_secs(200)));
         assert_eq!(rl.tracked(), 0);
     }
 
     #[test]
-    fn failures_while_locked_do_not_extend_lockout() {
+    fn attempts_while_locked_do_not_extend_lockout() {
         let rl = RateLimiter::new(2, Duration::from_secs(60));
         let t = Instant::now();
-        rl.record_failure_at(ip(1), t);
-        rl.record_failure_at(ip(1), t);
-        rl.record_failure_at(ip(1), t + Duration::from_secs(50));
+        fail(&rl, ip(1), t);
+        fail(&rl, ip(1), t);
+        assert_eq!(
+            fail(&rl, ip(1), t + Duration::from_secs(50)),
+            Attempt::Locked
+        );
         assert!(!rl.is_locked_at(ip(1), t + Duration::from_secs(61)));
     }
 
     #[test]
-    fn success_clears() {
-        let rl = RateLimiter::new(2, Duration::from_secs(60));
+    fn refund_removes_only_that_attempt() {
+        let rl = RateLimiter::new(3, Duration::from_secs(60));
         let t = Instant::now();
-        rl.record_failure_at(ip(1), t);
-        rl.clear(ip(1));
-        assert!(!rl.record_failure_at(ip(1), t));
+        fail(&rl, ip(1), t);
+        fail(&rl, ip(1), t + Duration::from_secs(1));
+        let Attempt::Allowed { at, .. } = fail(&rl, ip(1), t + Duration::from_secs(2)) else {
+            panic!("should be allowed");
+        };
+        assert!(rl.is_locked_at(ip(1), at));
+        rl.refund(ip(1), at);
+        assert!(!rl.is_locked_at(ip(1), at));
+        assert!(matches!(
+            fail(&rl, ip(1), at),
+            Attempt::Allowed {
+                locked_after: true,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn sweeps_stale_entries() {
+    fn ipv6_addresses_in_one_64_share_a_bucket() {
+        let rl = RateLimiter::new(2, Duration::from_secs(60));
+        let t = Instant::now();
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap();
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        fail(&rl, a, t);
+        fail(&rl, b, t);
+        assert!(rl.is_locked_at(a, t));
+        assert!(rl.is_locked_at(b, t));
+        assert!(!rl.is_locked_at(other, t));
+    }
+
+    #[test]
+    fn mapped_ipv4_shares_bucket_with_ipv4() {
+        assert_eq!(key("::ffff:10.0.0.1".parse().unwrap()), ip(1));
+    }
+
+    #[test]
+    fn full_table_fails_closed_for_new_clients() {
+        let rl = RateLimiter::with_capacity(5, Duration::from_secs(60), 3);
+        let t = Instant::now();
+        for n in 1..=3 {
+            assert!(matches!(fail(&rl, ip(n), t), Attempt::Allowed { .. }));
+        }
+        assert_eq!(fail(&rl, ip(4), t), Attempt::Locked);
+        assert!(matches!(fail(&rl, ip(1), t), Attempt::Allowed { .. }));
+        assert!(matches!(
+            fail(&rl, ip(4), t + Duration::from_secs(61)),
+            Attempt::Allowed { .. }
+        ));
+        assert_eq!(rl.tracked(), 1);
+    }
+
+    #[test]
+    fn sweeps_stale_entries_with_cooldown() {
         let rl = RateLimiter::new(5, Duration::from_secs(1));
         let t = Instant::now();
         for i in 0..SWEEP_THRESHOLD as u32 {
-            rl.record_failure_at(IpAddr::from(i.to_be_bytes()), t);
+            fail(&rl, IpAddr::from(i.to_be_bytes()), t);
         }
         assert_eq!(rl.tracked(), SWEEP_THRESHOLD);
-        rl.record_failure_at(ip(1), t + Duration::from_secs(5));
+        fail(&rl, ip(1), t + Duration::from_secs(5));
         assert_eq!(rl.tracked(), 1);
+        for i in 0..SWEEP_THRESHOLD as u32 {
+            fail(
+                &rl,
+                IpAddr::from((i + 1_000_000).to_be_bytes()),
+                t + Duration::from_secs(5),
+            );
+        }
+        fail(&rl, ip(2), t + Duration::from_secs(7));
+        assert_eq!(
+            rl.tracked(),
+            SWEEP_THRESHOLD + 2,
+            "no sweep inside the cooldown"
+        );
     }
 }

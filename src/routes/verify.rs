@@ -1,5 +1,3 @@
-//! `GET /api/verify`, called by the reverse proxy on every request.
-
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, State};
@@ -20,8 +18,6 @@ pub async fn verify(
 ) -> Response {
     let config = &state.config;
 
-    // Only the proxy may ask, so nobody can reach verify directly or spoof
-    // the forwarded headers.
     if !net::is_trusted(&config.server.trusted_proxies, peer.ip()) {
         tracing::warn!(peer = %peer.ip(), "verify called from an address outside server.trusted_proxies");
         return unauthorized();
@@ -41,10 +37,7 @@ pub async fn verify(
         let ok = add("remote-user", s.username)
             && add("remote-groups", &groups)
             && add("remote-name", &s.user.display_name)
-            && s.user
-                .email
-                .as_deref()
-                .is_none_or(|e| add("remote-email", e));
+            && add("remote-email", s.user.email.as_deref().unwrap_or(""));
         if !ok {
             tracing::error!(user = %s.username, "user data cannot be sent as headers");
             return unauthorized();
@@ -52,9 +45,6 @@ pub async fn verify(
         return (StatusCode::OK, out).into_response();
     }
 
-    // No valid session: send the browser to the login page, remembering where
-    // it was going. Without the forwarded headers the proxy is misconfigured,
-    // so fail closed.
     let Some(original) = rd::original_url(&headers) else {
         tracing::warn!("verify called without X-Forwarded-Proto/Host headers");
         return unauthorized();
@@ -62,8 +52,6 @@ pub async fn verify(
     let back = rd::validate_rd(config, original.as_str());
     let login = rd::login_url(config, back.as_ref());
 
-    // A 302 makes browsers repeat the method; for anything but GET/HEAD use
-    // 303 so a stale POST turns into a GET of the login page.
     let method = headers
         .get("x-forwarded-method")
         .and_then(|v| v.to_str().ok())
