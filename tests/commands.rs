@@ -20,8 +20,8 @@ fn temp_dir(name: &str) -> PathBuf {
 #[test]
 fn check_config_summarises_and_passes_warnings_on() {
     let dir = temp_dir("check");
-    let path = dir.join("config.yaml");
-    std::fs::write(&path, yaml(1, "[admins]", true)).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, toml(1, &["admins"], true)).unwrap();
     let c = check_config(&path).unwrap();
     assert!(c.summary.contains("is valid: 2 user(s)"), "{}", c.summary);
     assert!(c.summary.contains("auth.example.com"));
@@ -30,12 +30,12 @@ fn check_config_summarises_and_passes_warnings_on() {
     assert!(c.warnings.iter().any(|w| w.contains("jwt_secret")));
 
     assert!(load_config(&path).is_ok());
-    let e = check_config(&dir.join("missing.yaml")).err().unwrap();
+    let e = check_config(&dir.join("missing.toml")).err().unwrap();
     assert!(
         e.to_string().starts_with("loading config: could not read"),
         "{e}"
     );
-    assert!(load_config(&dir.join("missing.yaml")).is_err());
+    assert!(load_config(&dir.join("missing.toml")).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -60,7 +60,7 @@ fn log_levels() {
 
 #[tokio::test]
 async fn server_starts_answers_healthchecks_and_stops_on_signal() {
-    let config = config_from(&yaml(1, "[admins]", false));
+    let config = config_from(&toml(1, &["admins"], false));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -84,9 +84,12 @@ async fn server_starts_answers_healthchecks_and_stops_on_signal() {
 #[tokio::test]
 async fn a_bad_revocation_file_stops_startup() {
     let dir = temp_dir("badrev");
-    let y = yaml(1, "[admins]", false).replace(
-        "  expiry: 12h\n",
-        &format!("  expiry: 12h\n  revocation_file: {}\n", dir.display()),
+    let y = toml(1, &["admins"], false).replace(
+        "expiry = \"12h\"\n",
+        &format!(
+            "expiry = \"12h\"\nrevocation_file = {:?}\n",
+            dir.display().to_string()
+        ),
     );
     let config = config_from(&y);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -149,7 +152,7 @@ fn cli_covers_the_remaining_forms() {
 
     let from_env = std::env::var_os("RS_AUTH_CONFIG")
         .filter(|v| !v.is_empty())
-        .map_or_else(|| PathBuf::from("config.yaml"), PathBuf::from);
+        .map_or_else(|| PathBuf::from("config.toml"), PathBuf::from);
     match parse_args(args(&["serve"])).unwrap().unwrap() {
         Command::Serve { config } => assert_eq!(config, from_env),
         _ => panic!("expected serve"),
@@ -157,14 +160,14 @@ fn cli_covers_the_remaining_forms() {
     match parse_args(args(&[
         "check-config",
         "-c",
-        "x.yaml",
+        "x.toml",
         "--config",
-        "y.yaml",
+        "y.toml",
     ]))
     .unwrap()
     .unwrap()
     {
-        Command::CheckConfig { config } => assert_eq!(config, PathBuf::from("y.yaml")),
+        Command::CheckConfig { config } => assert_eq!(config, PathBuf::from("y.toml")),
         _ => panic!("expected check-config"),
     }
 }

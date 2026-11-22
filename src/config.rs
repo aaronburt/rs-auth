@@ -19,7 +19,8 @@ pub enum ConfigError {
         path: PathBuf,
         error: std::io::Error,
     },
-    Yaml(serde_yaml_ng::Error),
+    Toml(toml::de::Error),
+    Yaml(PathBuf),
     Invalid(String),
 }
 
@@ -27,7 +28,13 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Read { path, error } => write!(f, "could not read {}: {error}", path.display()),
-            Self::Yaml(e) => write!(f, "config is not valid YAML: {e}"),
+            Self::Toml(e) => write!(f, "config is not valid TOML: {e}"),
+            Self::Yaml(path) => write!(
+                f,
+                "{} looks like a YAML config; rs-auth now reads TOML. \
+                 Convert it to config.toml using config.example.toml as a guide",
+                path.display()
+            ),
             Self::Invalid(m) => f.write_str(m),
         }
     }
@@ -35,9 +42,9 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-impl From<serde_yaml_ng::Error> for ConfigError {
-    fn from(e: serde_yaml_ng::Error) -> Self {
-        Self::Yaml(e)
+impl From<toml::de::Error> for ConfigError {
+    fn from(e: toml::de::Error) -> Self {
+        Self::Toml(e)
     }
 }
 
@@ -284,20 +291,26 @@ impl Environment for RealEnvironment {
 
 impl Config {
     pub fn load_file(path: &Path) -> Result<Loaded, ConfigError> {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
+        {
+            return Err(ConfigError::Yaml(path.to_owned()));
+        }
         let text = std::fs::read_to_string(path).map_err(|error| ConfigError::Read {
             path: path.to_owned(),
             error,
         })?;
-        let mut loaded = Self::from_yaml(&text, &RealEnvironment)?;
+        let mut loaded = Self::from_toml(&text, &RealEnvironment)?;
         if let Some(w) = permission_warning(path) {
             loaded.warnings.push(w);
         }
         Ok(loaded)
     }
 
-    pub fn from_yaml(text: &str, env: &dyn Environment) -> Result<Loaded, ConfigError> {
+    pub fn from_toml(text: &str, env: &dyn Environment) -> Result<Loaded, ConfigError> {
         let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
-        let raw: RawConfig = serde_yaml_ng::from_str(text)?;
+        let raw: RawConfig = toml::from_str(text)?;
         let mut warnings = Vec::new();
 
         let insecure = raw.server.insecure_dev_mode;

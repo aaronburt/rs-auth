@@ -294,9 +294,9 @@ async fn signing_out_ends_only_that_session() {
 
 #[tokio::test]
 async fn password_change_ends_old_sessions() {
-    let old = app_with(&yaml(1, "[admins]", false));
+    let old = app_with(&toml(1, &["admins"], false));
     let session = sign_in(&old, "aaron", "correct horse").await;
-    let changed = yaml(1, "[admins]", false).replace(aaron_hash(), &quick_hash("correct horse"));
+    let changed = toml(1, &["admins"], false).replace(aaron_hash(), &quick_hash("correct horse"));
     let new = app_with(&changed);
     let r = send(
         &new,
@@ -312,9 +312,12 @@ async fn sign_out_survives_a_restart_with_revocation_file() {
     let dir = std::env::temp_dir().join(format!("rs-auth-it-{}", rs_auth::token::new_jti()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("revoked.txt");
-    let cfg = yaml(1, "[admins]", false).replace(
-        "  expiry: 12h\n",
-        &format!("  expiry: 12h\n  revocation_file: {}\n", file.display()),
+    let cfg = toml(1, &["admins"], false).replace(
+        "expiry = \"12h\"\n",
+        &format!(
+            "expiry = \"12h\"\nrevocation_file = {:?}\n",
+            file.display().to_string()
+        ),
     );
     assert!(cfg.contains("revocation_file"));
     let first = app_with(&cfg);
@@ -562,10 +565,10 @@ async fn spoofed_forwarded_for_from_untrusted_peer_is_ignored() {
 
 #[tokio::test]
 async fn groups_are_read_live_from_config() {
-    let old = app_with(&yaml(1, "[admins]", false));
+    let old = app_with(&toml(1, &["admins"], false));
     let session = sign_in(&old, "aaron", "correct horse").await;
 
-    let new = app_with(&yaml(1, "[viewers]", false));
+    let new = app_with(&toml(1, &["viewers"], false));
     let r = send(
         &new,
         PROXY,
@@ -590,7 +593,7 @@ async fn removed_user_is_rejected() {
     assert_eq!(r.header("remote-name"), Some("Guest"));
     assert_eq!(r.header("remote-email"), Some(""));
 
-    let without_guest = app_with(&yaml(1, "[admins]", false));
+    let without_guest = app_with(&toml(1, &["admins"], false));
     let r = send(
         &without_guest,
         PROXY,
@@ -602,9 +605,9 @@ async fn removed_user_is_rejected() {
 
 #[tokio::test]
 async fn bumping_session_version_logs_everyone_out() {
-    let v1 = app_with(&yaml(1, "[admins]", false));
+    let v1 = app_with(&toml(1, &["admins"], false));
     let session = sign_in(&v1, "aaron", "correct horse").await;
-    let v2 = app_with(&yaml(2, "[admins]", false));
+    let v2 = app_with(&toml(2, &["admins"], false));
     let r = send(
         &v2,
         PROXY,
@@ -646,7 +649,7 @@ async fn tampered_and_foreign_cookies_are_rejected() {
     }
 
     let other =
-        yaml(1, "[admins]", false).replace(SECRET, "another-secret-another-secret-another!!");
+        toml(1, &["admins"], false).replace(SECRET, "another-secret-another-secret-another!!");
     let other_session = sign_in(&app_with(&other), "aaron", "correct horse").await;
     let r = send(
         &app,
@@ -771,7 +774,8 @@ async fn concurrent_burst_gets_no_more_than_the_limit() {
 
 #[tokio::test]
 async fn overlong_usernames_are_rejected_not_truncated() {
-    let y = yaml(1, "[admins]", false).replace("  aaron:\n", &format!("  {}:\n", "a".repeat(64)));
+    let y = toml(1, &["admins"], false)
+        .replace("[users.aaron]\n", &format!("[users.{}]\n", "a".repeat(64)));
     let app = app_with(&y);
     let (cookie, token) = csrf(&app, PROXY).await;
     let long = "a".repeat(65);
@@ -822,7 +826,7 @@ async fn planted_unprefixed_csrf_cookie_is_not_accepted() {
 #[tokio::test]
 async fn hash_permit_is_held_until_argon2_finishes() {
     let heavy = rs_auth::password::hash("slow password").unwrap();
-    let y = yaml(1, "[admins]", false).replace(aaron_hash(), &heavy);
+    let y = toml(1, &["admins"], false).replace(aaron_hash(), &heavy);
     let state = rs_auth::AppState::new(config_from(&y));
     let total = state.hash_permits.available_permits();
     let s2 = state.clone();

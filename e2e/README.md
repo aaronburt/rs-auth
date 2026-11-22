@@ -7,7 +7,7 @@ proxies in Docker:
 - [`caddy/`](caddy): Caddy 2 with `forward_auth` and `copy_headers`.
 
 Each setup runs rs-auth (built from this repo), a second rs-auth with an edited
-config ([`config-changed.yaml`](config-changed.yaml)) to stand in for a restart,
+config ([`config-changed.toml`](config-changed.toml)) to stand in for a restart,
 a `whoami` app, and a curl container that runs the checks over https, the way a
 browser would.
 

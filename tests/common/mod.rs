@@ -45,52 +45,59 @@ impl Environment for NoEnv {
     }
 }
 
-pub fn yaml(version: u32, aaron_groups: &str, include_guest: bool) -> String {
+pub fn toml(version: u32, aaron_groups: &[&str], include_guest: bool) -> String {
     let guest = if include_guest {
         format!(
-            "  guest:\n    display_name: Guest\n    groups: [family]\n    password: \"{}\"\n",
+            "\n[users.guest]\ndisplay_name = \"Guest\"\ngroups = [\"family\"]\npassword = '{}'\n",
             quick_hash("guest pass")
         )
     } else {
         String::new()
     };
+    let groups = aaron_groups
+        .iter()
+        .map(|g| format!("{g:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"
-server:
-  address: 127.0.0.1:9091
-  portal_url: https://auth.example.com
-  trusted_proxies: [172.18.0.0/16, "::1"]
-session:
-  domain: example.com
-  version: {version}
-  expiry: 12h
-  jwt_secret: "{SECRET}"
-login:
-  max_attempts: 5
-  window: 5m
-users:
-  aaron:
-    display_name: Aaron Example
-    email: aaron@example.com
-    groups: {aaron_groups}
-    password: "{hash}"
+[server]
+address = "127.0.0.1:9091"
+portal_url = "https://auth.example.com"
+trusted_proxies = ["172.18.0.0/16", "::1"]
+
+[session]
+domain = "example.com"
+version = {version}
+expiry = "12h"
+jwt_secret = "{SECRET}"
+
+[login]
+max_attempts = 5
+window = "5m"
+
+[users.aaron]
+display_name = "Aaron Example"
+email = "aaron@example.com"
+groups = [{groups}]
+password = '{hash}'
 {guest}"#,
         hash = aaron_hash()
     )
 }
 
-pub fn config_from(yaml: &str) -> Config {
-    Config::from_yaml(yaml, &NoEnv)
+pub fn config_from(text: &str) -> Config {
+    Config::from_toml(text, &NoEnv)
         .expect("valid test config")
         .config
 }
 
-pub fn app_with(yaml: &str) -> Router {
-    rs_auth::router(rs_auth::AppState::new(config_from(yaml)))
+pub fn app_with(text: &str) -> Router {
+    rs_auth::router(rs_auth::AppState::new(config_from(text)))
 }
 
 pub fn app() -> Router {
-    app_with(&yaml(1, "[admins, family]", true))
+    app_with(&toml(1, &["admins", "family"], true))
 }
 
 pub struct Resp {

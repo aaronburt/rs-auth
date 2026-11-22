@@ -6,20 +6,20 @@ use std::path::Path;
 use common::*;
 use rs_auth::config::{Config, ConfigError, Environment};
 
-fn err(yaml: &str) -> String {
-    match Config::from_yaml(yaml, &NoEnv) {
+fn err(text: &str) -> String {
+    match Config::from_toml(text, &NoEnv) {
         Ok(_) => panic!("config should have been rejected"),
         Err(e) => e.to_string(),
     }
 }
 
 fn base() -> String {
-    yaml(1, "[admins]", false)
+    toml(1, &["admins"], false)
 }
 
 #[test]
 fn example_loads() {
-    let loaded = Config::from_yaml(&base(), &NoEnv).unwrap();
+    let loaded = Config::from_toml(&base(), &NoEnv).unwrap();
     let c = loaded.config;
     assert_eq!(c.session.domain, "example.com");
     assert_eq!(c.session.cookie_name, "rs_auth_session");
@@ -61,7 +61,7 @@ fn short_secret_is_rejected() {
 
 #[test]
 fn missing_secret_is_rejected() {
-    let y = base().replace(&format!("  jwt_secret: \"{SECRET}\"\n"), "");
+    let y = base().replace(&format!("jwt_secret = \"{SECRET}\"\n"), "");
     assert!(err(&y).contains("no JWT secret"));
 }
 
@@ -87,11 +87,11 @@ fn secret_sources_in_order_file_env_inline() {
     let file_secret = "file-secret-file-secret-file-secret!!\n";
     let env_secret = "env-secret-env-secret-env-secret-env!!";
     let with_file = base().replace(
-        &format!("  jwt_secret: \"{SECRET}\"\n"),
-        &format!("  jwt_secret_file: /run/secrets/jwt\n  jwt_secret: \"{SECRET}\"\n"),
+        &format!("jwt_secret = \"{SECRET}\"\n"),
+        &format!("jwt_secret_file = \"/run/secrets/jwt\"\njwt_secret = \"{SECRET}\"\n"),
     );
 
-    let c = Config::from_yaml(
+    let c = Config::from_toml(
         &with_file,
         &FakeEnv {
             var: Some(env_secret),
@@ -105,7 +105,7 @@ fn secret_sources_in_order_file_env_inline() {
         "file wins, newline trimmed"
     );
 
-    let c = Config::from_yaml(
+    let c = Config::from_toml(
         &base(),
         &FakeEnv {
             var: Some(env_secret),
@@ -123,7 +123,7 @@ fn secret_sources_in_order_file_env_inline() {
         "no inline warning when env is used"
     );
 
-    let e = Config::from_yaml(
+    let e = Config::from_toml(
         &with_file,
         &FakeEnv {
             var: Some(env_secret),
@@ -144,8 +144,8 @@ fn portal_must_be_inside_cookie_domain() {
 fn portal_must_be_https_unless_dev_mode() {
     let y = base().replace("https://auth.example.com", "http://auth.example.com");
     assert!(err(&y).contains("https"));
-    let dev = y.replace("server:\n", "server:\n  insecure_dev_mode: true\n");
-    let loaded = Config::from_yaml(&dev, &NoEnv).unwrap();
+    let dev = y.replace("[server]\n", "[server]\ninsecure_dev_mode = true\n");
+    let loaded = Config::from_toml(&dev, &NoEnv).unwrap();
     assert!(
         loaded
             .warnings
@@ -162,7 +162,7 @@ fn portal_must_be_host_root() {
 
 #[test]
 fn trusted_proxies_are_required_and_parsed() {
-    let none = base().replace("  trusted_proxies: [172.18.0.0/16, \"::1\"]\n", "");
+    let none = base().replace("trusted_proxies = [\"172.18.0.0/16\", \"::1\"]\n", "");
     assert!(err(&none).contains("trusted_proxies"));
     let bad = base().replace("172.18.0.0/16", "not-a-cidr");
     assert!(err(&bad).contains("not-a-cidr"));
@@ -170,28 +170,29 @@ fn trusted_proxies_are_required_and_parsed() {
 
 #[test]
 fn unknown_fields_are_rejected() {
-    let y = base().replace("login:\n", "login:\n  max_attempt: 3\n");
+    let y = base().replace("[login]\n", "[login]\nmax_attempt = 3\n");
     assert!(err(&y).contains("max_attempt"));
 }
 
 #[test]
 fn bad_durations_are_rejected() {
-    assert!(err(&base().replace("expiry: 12h", "expiry: 12")).contains("unit"));
-    assert!(err(&base().replace("expiry: 12h", "expiry: 30s")).contains("at least 1m"));
-    assert!(err(&base().replace("window: 5m", "window: 5 minutes")).contains("unit"));
+    assert!(err(&base().replace("expiry = \"12h\"", "expiry = \"12\"")).contains("unit"));
+    assert!(err(&base().replace("expiry = \"12h\"", "expiry = \"30s\"")).contains("at least 1m"));
+    assert!(err(&base().replace("window = \"5m\"", "window = \"5 minutes\"")).contains("unit"));
+    assert!(err(&base().replace("expiry = \"12h\"", "expiry = 12")).contains("string"));
 }
 
 #[test]
 fn bad_usernames_and_groups_are_rejected() {
-    assert!(err(&base().replace("  aaron:\n", "  \"aa ron\":\n")).contains("username"));
-    assert!(err(&base().replace("[admins]", "[\"a,b\"]")).contains("commas"));
+    assert!(err(&base().replace("[users.aaron]\n", "[users.\"aa ron\"]\n")).contains("username"));
+    assert!(err(&base().replace("[\"admins\"]", "[\"a,b\"]")).contains("commas"));
 }
 
 #[test]
 fn zero_attempts_and_no_users_are_rejected() {
-    assert!(err(&base().replace("max_attempts: 5", "max_attempts: 0")).contains("max_attempts"));
-    let i = base().find("users:").unwrap();
-    let no_users = format!("{}users: {{}}\n", &base()[..i]);
+    assert!(err(&base().replace("max_attempts = 5", "max_attempts = 0")).contains("max_attempts"));
+    let i = base().find("[users.aaron]").unwrap();
+    let no_users = format!("{}[users]\n", &base()[..i]);
     assert!(err(&no_users).contains("at least one user"));
 }
 
@@ -199,8 +200,8 @@ fn zero_attempts_and_no_users_are_rejected() {
 fn cookie_name_cannot_clash_with_csrf_cookie() {
     for name in ["rs_auth_csrf", "__Host-rs_auth_csrf"] {
         let y = base().replace(
-            "session:\n",
-            &format!("session:\n  cookie_name: \"{name}\"\n"),
+            "[session]\n",
+            &format!("[session]\ncookie_name = \"{name}\"\n"),
         );
         assert!(err(&y).contains("CSRF"), "{name} should be rejected");
     }
@@ -209,21 +210,21 @@ fn cookie_name_cannot_clash_with_csrf_cookie() {
 #[test]
 fn default_redirect_must_be_inside_domain() {
     let y = base().replace(
-        "server:\n",
-        "server:\n  default_redirect_url: https://evil.net/\n",
+        "[server]\n",
+        "[server]\ndefault_redirect_url = \"https://evil.net/\"\n",
     );
     assert!(err(&y).contains("default_redirect_url"));
 }
 
 #[test]
 fn shipped_example_config_parses_apart_from_placeholder_hashes() {
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.yaml"))
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.toml"))
         .unwrap();
     let re_hash = |s: &str| {
         s.lines()
             .map(|l| {
-                if l.trim_start().starts_with("password:") {
-                    format!("    password: \"{}\"", aaron_hash())
+                if l.starts_with("password =") {
+                    format!("password = '{}'", aaron_hash())
                 } else {
                     l.to_owned()
                 }
@@ -231,8 +232,8 @@ fn shipped_example_config_parses_apart_from_placeholder_hashes() {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let text = re_hash(&text).replace("  jwt_secret_file: /run/secrets/rs_auth_jwt\n", "");
-    let loaded = Config::from_yaml(&text, &FakeEnvSecret).unwrap();
+    let text = re_hash(&text).replace("jwt_secret_file = \"/run/secrets/rs_auth_jwt\"\n", "");
+    let loaded = Config::from_toml(&text, &FakeEnvSecret).unwrap();
     assert_eq!(loaded.config.users.len(), 2);
 }
 
@@ -249,15 +250,15 @@ impl Environment for FakeEnvSecret {
 #[test]
 fn utf8_bom_is_accepted() {
     let with_bom = format!("\u{FEFF}{}", base());
-    assert!(Config::from_yaml(&with_bom, &NoEnv).is_ok());
+    assert!(Config::from_toml(&with_bom, &NoEnv).is_ok());
 }
 
 #[test]
 fn ip_and_malformed_domains_are_rejected() {
     for bad in ["10.0.0.1", "example..com", "-example.com", "example-.com"] {
-        let y = base().replace("domain: example.com", &format!("domain: \"{bad}\""));
+        let y = base().replace("domain = \"example.com\"", &format!("domain = \"{bad}\""));
         assert!(
-            Config::from_yaml(&y, &NoEnv).is_err(),
+            Config::from_toml(&y, &NoEnv).is_err(),
             "{bad} should be rejected"
         );
     }
@@ -266,14 +267,17 @@ fn ip_and_malformed_domains_are_rejected() {
 #[test]
 fn malformed_emails_are_rejected() {
     for bad in ["@example.com", "aaron@", "a@b@c"] {
-        let y = base().replace("aaron@example.com", &format!("\"{bad}\""));
+        let y = base().replace("aaron@example.com", bad);
         assert!(err(&y).contains("email"), "{bad} should be rejected");
     }
 }
 
 #[test]
 fn ipv4_mapped_trusted_proxies_are_normalised() {
-    let y = base().replace("[172.18.0.0/16, \"::1\"]", "[\"::ffff:172.18.0.0/112\"]");
+    let y = base().replace(
+        "[\"172.18.0.0/16\", \"::1\"]",
+        "[\"::ffff:172.18.0.0/112\"]",
+    );
     let c = config_from(&y);
     assert_eq!(c.server.trusted_proxies[0].to_string(), "172.18.0.0/16");
     let peer: std::net::IpAddr = "172.18.0.2".parse().unwrap();
@@ -282,7 +286,7 @@ fn ipv4_mapped_trusted_proxies_are_normalised() {
 
 #[test]
 fn weak_argon2_settings_warn() {
-    let loaded = Config::from_yaml(&base(), &NoEnv).unwrap();
+    let loaded = Config::from_toml(&base(), &NoEnv).unwrap();
     assert!(
         loaded.warnings.iter().any(|w| w.contains("weak Argon2")),
         "test hashes use tiny params, so they should warn"

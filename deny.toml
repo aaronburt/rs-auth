@@ -6,7 +6,6 @@ version = 2
 yanked = "deny"
 unmaintained = "all"
 ignore = [
-    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained; it only parses the operator's own config file" },
     { id = "RUSTSEC-2026-0374", reason = "basic-toml is unmaintained; build-time only, via askama" },
 ]
 

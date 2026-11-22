@@ -1,0 +1,33 @@
+# Test-only config for the end-to-end environments. Do not reuse.
+# Passwords: aaron / aaron-test-pass, guest / guest-test-pass, carol / carol-test-pass.
+[server]
+address = "0.0.0.0:9091"
+portal_url = "https://auth.example.test"
+# Only the proxy container. The tester container is deliberately NOT
+# trusted, so it can check that direct calls to /api/verify are refused.
+trusted_proxies = ["172.30.0.10/32"]
+
+[session]
+domain = "example.test"
+expiry = "1h"
+# The secret comes from RS_AUTH_JWT_SECRET in docker-compose.yml.
+
+[login]
+max_attempts = 5
+window = "5m"
+
+[users.aaron]
+display_name = "Aaron"
+email = "aaron@example.test"
+groups = ["admins", "family"]
+password = '$argon2id$v=19$m=65536,t=3,p=4$5Ye5fJ0YVov9Hg7MO6WjlA$BjVyrTHEQY+28VKEF2r7nAM3O+PKwAH0b6MbSS6kDpM'
+
+[users.guest]
+display_name = "Guest"
+groups = ["family"]
+password = '$argon2id$v=19$m=65536,t=3,p=4$4wjJ8feFDW9PXIUwtFp+BA$Wce2/JDo23/tE0DkRj7Cm4b2EV7Y0GcllzlTIGf/Gec'
+
+[users.carol]
+display_name = "Carol"
+groups = ["family"]
+password = '$argon2id$v=19$m=65536,t=3,p=4$Whz0/ahNMwQqrWx7DAIbDg$L4XrG9doGitrHOWKkr8cWkoGMK4iGE3+mhY5QSz5/gc'

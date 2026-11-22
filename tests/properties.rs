@@ -37,7 +37,7 @@ proptest! {
 
     #[test]
     fn redirects_never_leave_the_domain(s in "\\PC{0,80}") {
-        let config = config_from(&yaml(1, "[admins]", false));
+        let config = config_from(&toml(1, &["admins"], false));
         if let Some(u) = validate_rd(&config, &s) {
             prop_assert_eq!(u.scheme(), "https");
             prop_assert!(u.username().is_empty() && u.password().is_none());
@@ -48,7 +48,7 @@ proptest! {
 
     #[test]
     fn redirect_tricks_are_rejected(prefix in label(), path in "[a-z/]{0,10}") {
-        let config = config_from(&yaml(1, "[admins]", false));
+        let config = config_from(&toml(1, &["admins"], false));
         for rd in [
             format!("https://{prefix}example.com/{path}"),
             format!("https://example.com.{prefix}.net/{path}"),

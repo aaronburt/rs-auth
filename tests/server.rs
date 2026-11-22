@@ -16,7 +16,8 @@ async fn raw(addr: SocketAddr, request: &str) -> String {
 
 #[tokio::test]
 async fn real_socket_round_trip() {
-    let y = yaml(1, "[admins]", false).replace("[172.18.0.0/16, \"::1\"]", "[127.0.0.1/32]");
+    let y =
+        toml(1, &["admins"], false).replace("[\"172.18.0.0/16\", \"::1\"]", "[\"127.0.0.1/32\"]");
     let app = app_with(&y);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -77,10 +77,10 @@ fn original_url_accepts_only_http_and_https_and_clean_hosts() {
 
 #[test]
 fn validate_rd_checks_scheme_userinfo_and_domain_independently() {
-    let strict = config_from(&yaml(1, "[admins]", false));
-    let dev = config_from(&yaml(1, "[admins]", false).replace(
-        "  trusted_proxies:",
-        "  insecure_dev_mode: true\n  trusted_proxies:",
+    let strict = config_from(&toml(1, &["admins"], false));
+    let dev = config_from(&toml(1, &["admins"], false).replace(
+        "trusted_proxies =",
+        "insecure_dev_mode = true\ntrusted_proxies =",
     ));
 
     for bad in [

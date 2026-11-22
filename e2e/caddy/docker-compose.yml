@@ -29,7 +29,7 @@ services:
       RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
       RUST_LOG: info
     volumes:
-      - ../config.yaml:/config/config.yaml:ro
+      - ../config.toml:/config/config.toml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
       interval: 2s
@@ -44,7 +44,7 @@ services:
       RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
       RUST_LOG: info
     volumes:
-      - ../config-changed.yaml:/config/config.yaml:ro
+      - ../config-changed.toml:/config/config.toml:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
       interval: 2s

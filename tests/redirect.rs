@@ -7,7 +7,7 @@ use rs_auth::redirect::{login_url, original_url, target, validate_rd};
 
 #[test]
 fn allowed_targets() {
-    let c = config_from(&yaml(1, "[admins]", false));
+    let c = config_from(&toml(1, &["admins"], false));
     for ok in [
         "https://example.com/",
         "https://grafana.example.com/d/abc?x=1#y",
@@ -20,7 +20,7 @@ fn allowed_targets() {
 
 #[test]
 fn denied_targets() {
-    let c = config_from(&yaml(1, "[admins]", false));
+    let c = config_from(&toml(1, &["admins"], false));
     for bad in [
         "",
         "/relative",
@@ -92,7 +92,7 @@ fn rebuilds_original_url() {
 
 #[test]
 fn login_url_encodes_rd() {
-    let c = config_from(&yaml(1, "[admins]", false));
+    let c = config_from(&toml(1, &["admins"], false));
     let rd = url::Url::parse("https://grafana.example.com/a?b=c&d=e").unwrap();
     let u = login_url(&c, Some(&rd));
     assert_eq!(

@@ -1,5 +1,5 @@
 # rs-auth with Caddy 2. Caddy gets certificates automatically.
-# server.trusted_proxies in config.yaml must include Caddy's address.
+# server.trusted_proxies in config.toml must include Caddy's address.
 
 (rs_auth) {
 	forward_auth rs-auth:9091 {

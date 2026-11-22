@@ -35,7 +35,7 @@ services:
       RS_AUTH_JWT_SECRET: demo-only-secret-demo-only-secret-demo-only
       RUST_LOG: info
     volumes:
-      - ./config.yaml:/config/config.yaml:ro
+      - ./config.toml:/config/config.toml:ro
     networks: [edge]
 
   whoami:
