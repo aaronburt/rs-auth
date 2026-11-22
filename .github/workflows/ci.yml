@@ -24,6 +24,28 @@ jobs:
         env:
           PROPTEST_CASES: "2048"
 
+  # Fails the build if line coverage drops below 90%. main.rs is only argument
+  # dispatch, signal handling and the terminal prompt; everything it calls lives
+  # in the library and is covered, so it is left out of the figure.
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Measure and enforce
+        run: >
+          cargo llvm-cov --locked
+          --ignore-filename-regex 'src/main\.rs'
+          --fail-under-lines 90
+          --summary-only
+        env:
+          PROPTEST_CASES: "256"
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20

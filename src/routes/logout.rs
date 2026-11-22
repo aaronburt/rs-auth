@@ -68,7 +68,7 @@ pub async fn submit(
         let jti = s.claims.jti.clone();
         state
             .revocations
-            .revoke(&jti, until, crate::token::now())
+            .revoke(&jti, s.claims.iat, until, crate::token::now())
             .await;
     }
     let jar = csrf::clear(jar, secure).with(cookie::clear_session(&state.config));

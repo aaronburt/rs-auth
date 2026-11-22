@@ -79,6 +79,10 @@ Changes to the config apply on restart.
 - Bump `session.version` to sign everyone out at once.
 - Signing out revokes that session's token ID (`jti`), so a copied cookie stops
   working too. Set `session.revocation_file` to keep the list across restarts.
+  The list holds up to 100,000 sign-outs. If it ever fills, it never forgets a
+  revoked session: it raises a "not before" line to the start time of the oldest
+  listed session and refuses every session that began at or before it. Those
+  users sign in again; nobody signed out comes back.
 - Each token carries a keyed fingerprint of the user's password hash, so
   changing a password ends that user's existing sessions.
 

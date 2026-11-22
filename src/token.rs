@@ -349,6 +349,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_backend_refuses_every_algorithm_but_hs256() {
+        let ek = EncodingKey::from_secret(SECRET).unwrap();
+        let dk = DecodingKey::from_secret(SECRET).unwrap();
+        for alg in [
+            Algorithm::HS384,
+            Algorithm::HS512,
+            Algorithm::RS256,
+            Algorithm::ES256,
+        ] {
+            assert!(
+                (HS256_ONLY.signer_factory)(&alg, &ek).is_err(),
+                "{alg:?} signer"
+            );
+            assert!(
+                (HS256_ONLY.verifier_factory)(&alg, &dk).is_err(),
+                "{alg:?} verifier"
+            );
+        }
+        assert!((HS256_ONLY.signer_factory)(&Algorithm::HS256, &ek).is_ok());
+        assert!((HS256_ONLY.verifier_factory)(&Algorithm::HS256, &dk).is_ok());
+    }
+
+    #[test]
+    fn the_backend_refuses_non_hmac_keys() {
+        let rsa_enc = EncodingKey::from_rsa_der(b"not a key");
+        let rsa_dec = DecodingKey::from_rsa_der(b"not a key");
+        assert!((HS256_ONLY.signer_factory)(&Algorithm::HS256, &rsa_enc).is_err());
+        assert!((HS256_ONLY.verifier_factory)(&Algorithm::HS256, &rsa_dec).is_err());
+    }
+
+    #[test]
+    fn errors_describe_themselves() {
+        assert_eq!(TokenError::Sign.to_string(), "token could not be signed");
+        assert_eq!(TokenError::Invalid.to_string(), "token is invalid");
+        assert_eq!(TokenError::Expired.to_string(), "token has expired");
+        let e: &dyn std::error::Error = &TokenError::Invalid;
+        assert!(e.source().is_none());
+    }
+
+    #[test]
+    fn tokens_over_the_size_limit_are_rejected_before_parsing() {
+        let s = Hs256Signer::new(SECRET, ISS);
+        let t = s.sign(&claims(3600)).unwrap();
+        assert!(s.verify(&t).is_ok());
+        assert_eq!(
+            s.verify(&format!("{t}{}", "a".repeat(4100))),
+            Err(TokenError::Invalid)
+        );
+    }
+
     fn serde_json_like(c: &Claims) -> Vec<u8> {
         format!(
             r#"{{"iss":"{}","sub":"{}","iat":{},"exp":{},"jti":"{}","pwh":"{}","ver":{}}}"#,
