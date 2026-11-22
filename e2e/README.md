@@ -3,25 +3,46 @@
 The same checks, [`test.sh`](test.sh), run against rs-auth behind two real
 proxies in Docker:
 
-- [`traefik/`](traefik): Traefik v3 with its `forwardAuth` middleware.
-- [`caddy/`](caddy): Caddy 2 with `forward_auth` and `copy_headers`.
+- [`traefik/`](traefik): Traefik 3.7 with its `forwardAuth` middleware and
+  the file provider.
+- [`caddy/`](caddy): Caddy 2.11 with `forward_auth` and `copy_headers`.
 
-Each setup runs rs-auth (built from this repo), a second rs-auth with an edited
-config ([`config-changed.toml`](config-changed.toml)) to stand in for a restart,
-a `whoami` app, and a curl container that runs the checks over https, the way a
-browser would.
+Each setup runs rs-auth (built from this repo) with its sign-out list on a
+volume, a second rs-auth with an edited config
+([`config-changed.toml`](config-changed.toml)) to stand in for a restart, a
+`whoami` app, and curl containers that run the checks over https, the way a
+browser would. The networks match the examples: only the proxy is on `edge`,
+rs-auth is on the internal `auth` network where the proxy has the fixed
+address 172.30.1.10 (the only trusted proxy), and the app is on the internal
+`apps` network.
 
 ```sh
-docker compose -f e2e/traefik/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
-docker compose -f e2e/traefik/docker-compose.yml down -v
-# or e2e/caddy/docker-compose.yml
+docker compose -f e2e/traefik/docker-compose.yml build
+sh e2e/run.sh traefik
+docker compose -f e2e/traefik/docker-compose.yml --profile phases down -v
+# or caddy
 ```
 
-The exit code is 0 when every check passes. The first run compiles rs-auth
-inside Docker, which takes a few minutes. Both setups use the same subnet, so
-run one at a time. CI runs both on every push and pull request in the `e2e`
-job of [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), and prints
-the container logs if a check fails.
+[`run.sh`](run.sh) runs four phases and exits 0 when every check passes:
+
+- **main**: `test.sh` from a tester that joins all three networks, so it can
+  also act as an untrusted neighbour.
+- **outside**: `test.sh outside` from a container only on `edge`. rs-auth and
+  the app can't be reached; the proxy can, and its portal does not serve
+  `/api/verify`.
+- **restart**: rs-auth is restarted, then `test.sh restart` checks that a
+  cookie signed out before the restart is still refused and a live one still
+  works.
+- **outage**: rs-auth is stopped while the app stays up, then `test.sh outage`
+  checks the app answers when called directly but every protected request
+  through the proxy (valid cookie, no cookie, forged `Remote-*` headers) gets a
+  `5xx` and no app content.
+
+The first build compiles rs-auth inside Docker, which takes a few minutes.
+Both setups use the same subnets, so run one at a time. CI runs both on every
+push and pull request in the `e2e` job of
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml), and prints the
+container logs if a check fails.
 
 ## What it checks
 
@@ -36,7 +57,7 @@ the container logs if a check fails.
    `Remote-*` headers, and client-sent `Remote-*` headers are replaced.
 6. A user with no email can't smuggle in a forged `Remote-Email`.
 7. Calling rs-auth directly, skipping the proxy, is refused even with a valid
-   cookie (`trusted_proxies` only lists the proxy's address).
+   cookie (`trusted_proxies` only lists the proxy's fixed address).
 8. Open redirects: about 20 hostile `rd` values (other domains, lookalikes,
    `http`, userinfo, `//evil`, backslashes, encoded tricks, `javascript:`,
    `data:`) all land on the portal, both when already signed in and right
@@ -49,7 +70,14 @@ the container logs if a check fails.
     signed out.
 11. `GET /logout` only asks. `POST /logout` needs its CSRF token and then
     signs out. A copied cookie stops working after sign-out.
-12. Five failed sign-ins lock the client out with a 429 and no `Retry-After`,
+12. The portal answers `404` for `/api/verify` and ten path variants
+    (`//api/verify`, `/api/./verify`, `/api/%76erify`, `/API/verify`, ...)
+    with no `Remote-*` headers, while forward-auth through the proxy still works.
+13. The app gets its own cookies but never the session cookie or token; with
+    only the session cookie it gets no `Cookie` header at all. Two different
+    session cookies get `400`. Underscore aliases like `Remote_User` never
+    reach the app.
+14. Five failed sign-ins lock the client out with a 429 and no `Retry-After`,
     even with a rotating `X-Forwarded-For`.
 
 ## Trying it in a browser

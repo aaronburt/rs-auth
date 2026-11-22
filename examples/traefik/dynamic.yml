@@ -1,8 +1,33 @@
-# The same middleware for Traefik's file provider, if you don't use labels.
 http:
   middlewares:
+    client-limit:
+      inFlightReq:
+        amount: 64
     rs-auth:
       forwardAuth:
         address: http://rs-auth:9091/api/verify
         trustForwardHeader: true
-        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name, Cookie]
+
+  routers:
+    portal:
+      rule: Host(`auth.example.com`) && !PathPrefix(`/api/verify`)
+      entryPoints: [websecure]
+      service: rs-auth
+      tls: {}
+    whoami:
+      rule: Host(`whoami.example.com`)
+      entryPoints: [websecure]
+      middlewares: [rs-auth]
+      service: whoami
+      tls: {}
+
+  services:
+    rs-auth:
+      loadBalancer:
+        servers:
+          - url: http://rs-auth:9091
+    whoami:
+      loadBalancer:
+        servers:
+          - url: http://whoami:80

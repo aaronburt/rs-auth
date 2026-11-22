@@ -4,9 +4,9 @@
 [server]
 address = "0.0.0.0:9091"
 portal_url = "https://auth.example.test"
-# Only the proxy container. The tester container is deliberately NOT
+# Only the proxy, at its fixed address on the auth network. The tester is deliberately NOT
 # trusted, so it can check that direct calls to /api/verify are refused.
-trusted_proxies = ["172.30.0.10/32"]
+trusted_proxies = ["172.30.1.10/32"]
 
 [session]
 domain = "example.test"

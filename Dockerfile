@@ -10,10 +10,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY templates ./templates
 RUN cargo build --release --locked --target "$(cat /rust-target)" \
- && cp "target/$(cat /rust-target)/release/rs-auth" /rs-auth
+ && cp "target/$(cat /rust-target)/release/rs-auth" /rs-auth \
+ && mkdir -p /empty/data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 COPY --from=build /rs-auth /usr/local/bin/rs-auth
+COPY --from=build --chown=65532:65532 /empty/data /data
 EXPOSE 9091
 ENV RS_AUTH_CONFIG=/config/config.toml
 HEALTHCHECK --interval=30s --timeout=5s CMD ["/usr/local/bin/rs-auth", "healthcheck"]

@@ -1,19 +1,22 @@
 http:
   middlewares:
+    client-limit:
+      inFlightReq:
+        amount: 64
     rs-auth:
       forwardAuth:
         address: http://rs-auth:9091/api/verify
         trustForwardHeader: true
-        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name, Cookie]
     rs-auth-changed:
       forwardAuth:
         address: http://rs-auth-changed:9091/api/verify
         trustForwardHeader: true
-        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]
+        authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name, Cookie]
 
   routers:
     portal:
-      rule: Host(`auth.example.test`)
+      rule: Host(`auth.example.test`) && !PathPrefix(`/api/verify`)
       entryPoints: [websecure]
       service: rs-auth
       tls: {}

@@ -1,36 +1,60 @@
-# rs-auth guarding a whoami app behind Caddy.
-# config.toml: [server] trusted_proxies = ["172.31.0.0/24"]
+# rs-auth guarding a whoami app behind Caddy 2.
+# 1. Put a config.toml next to this file (copy ../../config.example.toml) and set
+#      [server] trusted_proxies = ["172.31.1.10/32"]
+#      [session] revocation_file = "/data/revoked.txt"
+#    172.31.1.10 is Caddy's fixed address on the "auth" network below, and is
+#    the only address rs-auth should trust.
+# 2. openssl rand -hex 32 > jwt.secret
+# 3. docker compose up -d, then open https://whoami.example.com
+#
+# Only Caddy is on "edge" and publishes ports. rs-auth and the apps sit on
+# internal networks with no published ports, and apps cannot reach rs-auth.
+# Run one rs-auth: each replica keeps its own sign-out list (see the README).
 name: rs-auth-caddy
 
 networks:
-  proxy:
+  edge:
+  auth:
+    internal: true
     ipam:
       config:
-        - subnet: 172.31.0.0/24
+        - subnet: 172.31.1.0/24
+  apps:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.2.0/24
 
 secrets:
   rs_auth_jwt:
     file: ./jwt.secret
 
+volumes:
+  caddy_data:
+  rs_auth_data:
+
 services:
   caddy:
-    image: caddy:2
+    image: caddy:2.11.9
     ports: ["80:80", "443:443"]
     volumes:
       - ./Caddyfile.whoami:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
-    networks: [proxy]
+    networks:
+      edge:
+      auth:
+        ipv4_address: 172.31.1.10
+      apps:
 
   rs-auth:
     build: ../..
     volumes:
       - ./config.toml:/config/config.toml:ro
+      - rs_auth_data:/data
     secrets: [rs_auth_jwt]
-    networks: [proxy]
+    networks: [auth]
+    restart: unless-stopped
 
   whoami:
-    image: traefik/whoami
-    networks: [proxy]
-
-volumes:
-  caddy_data:
+    image: traefik/whoami:v1.10
+    networks: [apps]
