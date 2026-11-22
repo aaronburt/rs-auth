@@ -76,6 +76,9 @@ jwt_secret = "{SECRET}"
 max_attempts = 5
 window = "5m"
 
+[access."*.example.com"]
+groups = ["admins", "family", "viewers"]
+
 [users.aaron]
 display_name = "Aaron Example"
 email = "aaron@example.com"

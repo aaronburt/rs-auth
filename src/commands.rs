@@ -28,9 +28,10 @@ pub fn check_config(path: &Path) -> Res<Checked> {
     let loaded = Config::load_file(path).map_err(|e| format!("loading config: {e}"))?;
     let c = &loaded.config;
     let summary = format!(
-        "{} is valid: {} user(s), portal {}, cookie domain {}, sessions last {}s.",
+        "{} is valid: {} user(s), {} access rule(s), portal {}, cookie domain {}, sessions last {}s.",
         path.display(),
         c.users.len(),
+        c.access.len(),
         c.server.portal_url,
         c.session.domain,
         c.session.expiry.as_secs()

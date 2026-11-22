@@ -3,9 +3,12 @@
 A small forward-auth login portal for Traefik and Caddy, written in Rust.
 
 rs-auth sits beside your reverse proxy and guards your apps with one login
-page. The proxy asks `GET /api/verify` on every request. A valid session gets
-`200` with `Remote-User`, `Remote-Groups`, `Remote-Email` and `Remote-Name`
-headers; anything else gets a `302` to the login page. After signing in, a
+page. The proxy asks `GET /api/verify` on every request. Each host is open only
+to the groups listed for it in `[access]`; a host with no entry is closed to
+everyone. A signed-in user in one of the host's groups gets `200` with
+`Remote-User`, `Remote-Groups`, `Remote-Email` and `Remote-Name` headers; a
+user who isn't signed in gets a `302` to the login page; anyone else gets a
+`403` "No access" page. After signing in, a
 signed JWT cookie shared across your domain lets you open every protected app
 without seeing the login page again until it expires.
 
@@ -44,7 +47,7 @@ Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (defau
 
 | Method | Path | Called by | Does |
 | --- | --- | --- | --- |
-| GET | `/api/verify` | The proxy, internally | Valid session: `200`, `Remote-*` headers, and a `Cookie` header holding the request's other cookies (see [Proxy setup](#proxy-setup)). Otherwise `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Two session cookies with different values get `400`. Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. Never route it publicly. |
+| GET | `/api/verify` | The proxy, internally | Host with no `[access]` entry: `403` for everyone. Not signed in: `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Signed in but not in one of the host's groups: `403` with a "No access" page. Otherwise `200`, `Remote-*` headers, and a `Cookie` header holding the request's other cookies (see [Proxy setup](#proxy-setup)). Two session cookies with different values get `400`. Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. Never route it publicly. |
 | GET | `/login?rd=<url>` | Browser | The sign-in form. Already signed in: straight to `rd`. |
 | POST | `/login` | Form | Checks CSRF, the rate limits and the password. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. Too many sign-ins already waiting: `503` and an amber message. |
 | GET | `/logout` | Browser | A "Sign out?" page. Apps link here. |
@@ -72,6 +75,35 @@ refuses to start on a bad config. The rules:
 - The server warns if the config file is world-readable.
 
 Changes to the config apply on restart.
+
+### Access rules
+
+Access is by group and closed by default. Each host that rs-auth guards needs
+an `[access."<host>"]` table listing the groups that may open it:
+
+```toml
+[access."grafana.example.com"]
+groups = ["admins"]
+
+[access."photos.example.com"]
+groups = ["family", "admins"]
+
+[access."*.lab.example.com"]
+groups = ["admins"]
+```
+
+- A user gets in if they are in **any** of the listed groups.
+- A host with no entry gets `403` for everyone, signed in or not.
+- `*.lab.example.com` covers every subdomain of `lab.example.com`, at any depth,
+  but not `lab.example.com` itself. An exact host beats a wildcard, and a longer
+  wildcard beats a shorter one, so the order of the tables doesn't matter.
+- Hosts are matched without case, port or a trailing dot. They must sit inside
+  `session.domain`, can't be the portal's own host, and can't be listed twice.
+- Groups come from the config on every request, never from the session token,
+  so taking someone out of a group locks them out of its hosts on their next
+  request.
+- `check-config` warns about a group that no user is in, and about a config
+  with no `[access]` entries at all.
 
 ### Sessions
 
@@ -219,17 +251,14 @@ and use a `*.localhost` portal URL. Never use dev mode in production.
 
 ## Running beside Authelia
 
-rs-auth only answers "is this a signed-in user with the right password". It has
-no access rules, so every user in the config can open every app behind it, and
-it has no second factor or OIDC. Keep Authelia (or similar) in front of any
-route that needs MFA, a per-user or per-group policy, or serves OIDC clients,
-and put only password-is-enough routes behind rs-auth. A passing sign-in test
-says nothing about whether an ordinary user is kept off an admin-only app; that
-is decided by which middleware each route uses.
+rs-auth answers "is this a signed-in user in one of this host's groups". Rules
+are per host only, with no path or method rules, and there is no second factor
+or OIDC. Keep Authelia (or similar) in front of any route that needs MFA,
+path-level rules, or serves OIDC clients.
 
 ## Not in v1
 
-Per-domain access rules, nginx support, config hot reload, remember-me,
+Path or method access rules, nginx support, config hot reload, remember-me,
 server-side sessions, 2FA, password reset, LDAP or database users, and an
 OIDC provider. Token signing sits behind a `TokenSigner` trait and `iss` is
 set from day one, so OIDC can be added later without a rewrite.

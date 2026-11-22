@@ -23,7 +23,11 @@ fn check_config_summarises_and_passes_warnings_on() {
     let path = dir.join("config.toml");
     std::fs::write(&path, toml(1, &["admins"], true)).unwrap();
     let c = check_config(&path).unwrap();
-    assert!(c.summary.contains("is valid: 2 user(s)"), "{}", c.summary);
+    assert!(
+        c.summary.contains("is valid: 2 user(s), 1 access rule(s)"),
+        "{}",
+        c.summary
+    );
     assert!(c.summary.contains("auth.example.com"));
     assert!(c.summary.contains("cookie domain example.com"));
     assert!(c.summary.contains("43200s"));

@@ -79,10 +79,14 @@ async fn verify_without_forwarded_headers_fails_closed() {
 }
 
 #[tokio::test]
-async fn verify_for_host_outside_domain_drops_rd() {
+async fn verify_for_host_outside_domain_is_forbidden() {
     let r = send(&app(), PROXY, verify_req("GET", "evil.net", "/", "")).await;
-    assert_eq!(r.status, StatusCode::FOUND);
-    assert_eq!(r.location(), "https://auth.example.com/login");
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert!(r.header("location").is_none());
+    assert!(
+        r.body
+            .contains("<strong>evil.net</strong> is not open to anyone")
+    );
 }
 
 #[tokio::test]

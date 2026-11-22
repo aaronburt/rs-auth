@@ -17,6 +17,9 @@ expiry = "1h"
 max_attempts = 5
 window = "5m"
 
+[access."changed.example.test"]
+groups = ["family"]
+
 [users.aaron]
 display_name = "Aaron"
 email = "aaron@example.test"

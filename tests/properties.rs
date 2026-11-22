@@ -103,3 +103,42 @@ proptest! {
         prop_assert_eq!(client_ip(&trusted, peer, &h), expected);
     }
 }
+
+fn rules_access() -> rs_auth::access::Access {
+    rs_auth::access::Access::new(
+        [
+            ("grafana.example.com", "admins"),
+            ("*.lab.example.com", "admins"),
+            ("open.lab.example.com", "family"),
+        ]
+        .into_iter()
+        .map(|(h, g)| (h.to_owned(), vec![g.to_owned()]))
+        .collect(),
+    )
+}
+
+proptest! {
+    #[test]
+    fn a_rule_only_ever_matches_its_own_host_or_subdomains(s in "[a-z0-9.\\-]{0,40}") {
+        let a = rules_access();
+        if let Some(g) = a.groups_for(&s) {
+            let h = s.strip_suffix('.').unwrap_or(&s);
+            if h == "open.lab.example.com" {
+                prop_assert_eq!(g, &["family".to_owned()][..]);
+            } else if h == "grafana.example.com" {
+                prop_assert_eq!(g, &["admins".to_owned()][..]);
+            } else {
+                prop_assert!(host_in_domain(h, "lab.example.com") && h != "lab.example.com", "{s}");
+                prop_assert_eq!(g, &["admins".to_owned()][..]);
+            }
+        }
+    }
+
+    #[test]
+    fn the_exact_rule_beats_the_wildcard(sub in prop::collection::vec(label(), 1..3)) {
+        let a = rules_access();
+        let host = format!("{}.lab.example.com", sub.join("."));
+        let want = if host == "open.lab.example.com" { "family" } else { "admins" };
+        prop_assert_eq!(a.groups_for(&host), Some(&[want.to_owned()][..]));
+    }
+}

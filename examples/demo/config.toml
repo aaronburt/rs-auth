@@ -13,6 +13,13 @@ revocation_file = "/data/revoked.txt"
 max_attempts = 5
 window = "5m"
 
+[access."whoami.rs-auth.localhost"]
+groups = ["family"]
+
+# Only admins: sign in as guest to see the 403 page.
+[access."other.rs-auth.localhost"]
+groups = ["admins"]
+
 [users.aaron]
 display_name = "Aaron"
 email = "aaron@example.test"

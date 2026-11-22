@@ -8,6 +8,7 @@ use ipnet::IpNet;
 use serde::Deserialize;
 use url::Url;
 
+use crate::access::{self, Access, Pattern};
 use crate::password;
 
 pub const MIN_SECRET_LEN: usize = 32;
@@ -100,6 +101,14 @@ struct RawConfig {
     #[serde(default)]
     login: RawLogin,
     users: BTreeMap<String, RawUser>,
+    #[serde(default)]
+    access: BTreeMap<String, RawRule>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRule {
+    groups: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,6 +206,7 @@ pub struct Config {
     pub session: SessionConfig,
     pub login: LoginConfig,
     pub users: BTreeMap<String, User>,
+    pub access: Access,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +273,7 @@ impl fmt::Debug for Config {
             .field("session", &self.session)
             .field("login", &self.login)
             .field("users", &self.users)
+            .field("access", &self.access)
             .finish()
     }
 }
@@ -443,10 +454,7 @@ impl Config {
                 ));
             }
             for g in &u.groups {
-                if g.is_empty()
-                    || g.contains(',')
-                    || g.chars().any(|c| c.is_control() || c.is_whitespace())
-                {
+                if !valid_group(g) {
                     return invalid(format!(
                         "users.{name}.groups: {g:?} must be non-empty with no commas or spaces"
                     ));
@@ -477,6 +485,8 @@ impl Config {
             );
         }
 
+        let access = resolve_access(raw.access, &domain, &portal_host, &users, &mut warnings)?;
+
         Ok(Loaded {
             config: Config {
                 server: ServerConfig {
@@ -500,6 +510,7 @@ impl Config {
                     max_attempts_per_user: raw.login.max_attempts_per_user,
                 },
                 users,
+                access,
             },
             warnings,
         })
@@ -554,6 +565,72 @@ fn parse_net(s: &str) -> Result<IpNet, ConfigError> {
     invalid(format!(
         "server.trusted_proxies entry {s:?} is not an IP address or CIDR"
     ))
+}
+
+fn valid_group(g: &str) -> bool {
+    !g.is_empty() && !g.contains(',') && !g.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+fn valid_domain(d: &str) -> bool {
+    !d.is_empty()
+        && d.parse::<std::net::IpAddr>().is_err()
+        && d.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        && d.split('.')
+            .all(|l| !l.is_empty() && !l.starts_with('-') && !l.ends_with('-'))
+}
+
+fn resolve_access(
+    raw: BTreeMap<String, RawRule>,
+    domain: &str,
+    portal_host: &str,
+    users: &BTreeMap<String, User>,
+    warnings: &mut Vec<String>,
+) -> Result<Access, ConfigError> {
+    if raw.is_empty() {
+        warnings.push(
+            "access lists no hosts, so every app gets 403. Add [access.\"app.example.com\"] with groups = [...]."
+                .into(),
+        );
+    }
+    let mut rules = BTreeMap::new();
+    for (pattern, rule) in raw {
+        let host = pattern.to_ascii_lowercase();
+        let base = match access::parse_pattern(&host) {
+            Pattern::Exact(h) | Pattern::Wildcard(h) => h,
+        };
+        if !valid_domain(base) || !host_in_domain(base, domain) {
+            return invalid(format!(
+                "access.{pattern:?} must be a host inside {domain}, like app.{domain} or *.{domain}"
+            ));
+        }
+        if host == portal_host {
+            return invalid(format!(
+                "access.{pattern:?} is the portal itself, which is never behind forward-auth"
+            ));
+        }
+        if rule.groups.is_empty() {
+            return invalid(format!(
+                "access.{pattern:?}.groups must list at least one group"
+            ));
+        }
+        for g in &rule.groups {
+            if !valid_group(g) {
+                return invalid(format!(
+                    "access.{pattern:?}.groups: {g:?} must be non-empty with no commas or spaces"
+                ));
+            }
+            if !users.values().any(|u| u.groups.contains(g)) {
+                warnings.push(format!(
+                    "access.{pattern:?} allows group {g:?}, but no user is in it"
+                ));
+            }
+        }
+        if rules.insert(host, rule.groups).is_some() {
+            return invalid(format!("access lists {pattern:?} more than once"));
+        }
+    }
+    Ok(Access::new(rules))
 }
 
 fn validate_username(name: &str) -> Result<(), ConfigError> {

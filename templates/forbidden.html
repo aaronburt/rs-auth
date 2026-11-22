@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}No access{% endblock %}
+{% block content %}
+<div class="head">
+<h1>No access</h1>
+{% if let Some(name) = username %}
+<p class="sub">You are signed in as <strong>{{ name }}</strong>, which does not have access to <strong>{{ host }}</strong>. Ask an administrator to add you to a group that can open it.</p>
+{% else %}
+<p class="sub"><strong>{{ host }}</strong> is not open to anyone.</p>
+{% endif %}
+</div>
+{% if username.is_some() %}
+<div class="actions">
+<a class="btn btn-secondary" href="{{ logout_url }}">Sign out</a>
+</div>
+{% endif %}
+{% endblock %}

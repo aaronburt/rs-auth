@@ -36,7 +36,7 @@ services:
     networks:
       edge:
         ipv4_address: 172.30.0.10
-        aliases: [auth.example.test, whoami.example.test, other.example.test, changed.example.test]
+        aliases: [auth.example.test, whoami.example.test, other.example.test, changed.example.test, admins.example.test, x.lab.example.test, lab.example.test, unlisted.example.test]
       auth:
         ipv4_address: 172.30.1.10
       apps:
