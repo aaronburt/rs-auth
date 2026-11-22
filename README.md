@@ -44,11 +44,11 @@ Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (defau
 
 | Method | Path | Called by | Does |
 | --- | --- | --- | --- |
-| GET | `/api/verify` | The proxy | Valid session: `200` and `Remote-*` headers. Otherwise `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. |
+| GET | `/api/verify` | The proxy, internally | Valid session: `200`, `Remote-*` headers, and a `Cookie` header holding the request's other cookies (see [Proxy setup](#proxy-setup)). Otherwise `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Two session cookies with different values get `400`. Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. Never route it publicly. |
 | GET | `/login?rd=<url>` | Browser | The sign-in form. Already signed in: straight to `rd`. |
-| POST | `/login` | Form | Checks CSRF, the rate limit and the password. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. |
+| POST | `/login` | Form | Checks CSRF, the rate limits and the password. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. Too many sign-ins already waiting: `503` and an amber message. |
 | GET | `/logout` | Browser | A "Sign out?" page. Apps link here. |
-| POST | `/logout` | Form | Ends the session server-side and clears the cookie (CSRF-checked), then to `/login`. |
+| POST | `/logout` | Form | Ends the session server-side and clears the cookie (CSRF-checked), then to `/login`. If `session.revocation_file` can't be written: `503`, the cookie is kept, and the page offers to try again. |
 | GET | `/logged-in` | Browser | Where a sign-in without `rd` lands. Change with `server.default_redirect_url`. |
 | GET | `/healthz` | Monitoring | `ok`. |
 
@@ -81,22 +81,109 @@ Changes to the config apply on restart.
   user from the config locks them out on their next request.
 - Bump `session.version` to sign everyone out at once.
 - Signing out revokes that session's token ID (`jti`), so a copied cookie stops
-  working too. Set `session.revocation_file` to keep the list across restarts.
+  working too. Set `session.revocation_file` to keep the list across restarts
+  (see [Keeping sign-outs across restarts](#keeping-sign-outs-across-restarts)).
   The list holds up to 100,000 sign-outs. If it ever fills, it never forgets a
   revoked session: it raises a "not before" line to the start time of the oldest
   listed session and refuses every session that began at or before it. Those
   users sign in again; nobody signed out comes back.
 - Each token carries a keyed fingerprint of the user's password hash, so
   changing a password ends that user's existing sessions.
+- The browser sends a cookie set on `session.domain` to **every** host under
+  that domain, not only to the apps behind rs-auth. Any host there (a sibling
+  app, a staging box, a user-content subdomain) receives the session token and
+  can replay it, or set its own cookie of the same name. rs-auth refuses a
+  request carrying two different session cookies, and the proxy examples strip
+  the cookie before the request reaches a protected app, but neither can stop a
+  host outside the proxy from seeing it. Pick a `session.domain` whose hosts are
+  all equally trusted, such as a dedicated `apps.example.com`, rather than a
+  domain shared with anything you don't control.
+
+### Keeping sign-outs across restarts
+
+`session.revocation_file` must be on persistent, writable storage. rs-auth
+checks at startup that it can write the file and refuses to start if not. If a
+later write fails, the sign-out still takes effect in memory, but `POST /logout`
+answers `503` instead of reporting success, keeps the browser's cookie, and
+offers a retry. Every retry, and every later sign-out, rewrites the whole list,
+so once the disk is writable again nothing is lost. Without a retry, a restart
+forgets the unsaved sign-outs.
+
+The Docker image runs as uid 65532 and has an empty `/data` owned by it, so a
+named volume mounted there starts out writable:
+
+```yaml
+services:
+  rs-auth:
+    image: rs-auth
+    volumes:
+      - ./config.toml:/config/config.toml:ro
+      - rs_auth_data:/data
+volumes:
+  rs_auth_data:
+```
+
+```toml
+[session]
+revocation_file = "/data/revoked.txt"
+```
+
+A bind mount works too if the host directory is owned by uid 65532
+(`chown 65532:65532 ./data`).
+
+Run **one** instance. Each rs-auth process keeps its own list in memory and
+only reads the file at startup, so replicas, even sharing a volume, keep
+independent revocation state: a session signed out on one replica keeps working
+on the others until it expires. Sharing one file between replicas also lets
+them overwrite each other's writes.
+
+## Proxy setup
+
+The examples in [`examples/traefik`](examples/traefik) (file provider, no
+Docker socket) and [`examples/caddy`](examples/caddy) follow these rules, and
+[`e2e`](e2e/README.md) checks them behind both proxies:
+
+- **Trust one address.** Give the proxy a fixed IP on a network it shares only
+  with rs-auth, and put just that `/32` in `server.trusted_proxies`. Never trust
+  a subnet that app containers can join.
+- **Keep rs-auth and the apps private.** Only the proxy publishes ports. rs-auth
+  and the apps sit on separate `internal` Docker networks, so apps can't reach
+  rs-auth and nothing outside can reach either.
+- **Don't route `/api/verify` publicly.** The portal route excludes it
+  (Traefik: `!PathPrefix(`/api/verify`)`, Caddy: `respond @verify 404`). The
+  proxy's own forward-auth calls go straight to rs-auth and are unaffected.
+- **Strip the session cookie.** List `Cookie` in Traefik's
+  `authResponseHeaders` or Caddy's `copy_headers`. On success rs-auth returns
+  the request's cookies minus its own, and the proxy replaces the request's
+  `Cookie` header with that (or removes it if nothing is left), so the app keeps
+  its own cookies but never sees the session token.
+- **Drop header aliases.** Some app stacks treat `Remote_User` as
+  `Remote-User`. Traefik's `--entrypoints.websecure.http.aliasHeadersStrategy=delete`
+  removes such aliases at the public entry point; the Caddy examples delete
+  `Remote_*` request headers.
+- **Bound slow and greedy clients.** Traefik: `respondingTimeouts.readTimeout`
+  (it has no separate header timeout, so this bounds headers and body together),
+  `http.maxHeaderBytes`, and an `inFlightReq` limit per client IP on the entry
+  point. Caddy: `timeouts { read_header read_body idle }`, `max_header_size`, and
+  `max_conns_per_host` on the transports to rs-auth. Caddy has no built-in
+  per-client connection limit; use a host firewall or a plugin if you need one.
+- **Fail closed.** If rs-auth is down, both proxies answer `5xx` and never pass
+  the request to the app. The e2e suite checks this with the app healthy.
 
 ## Security notes
 
 - Unknown usernames still run a full Argon2 check, and every failure says
   "Invalid username or password", so usernames can't be probed.
 - Failed sign-ins are limited per client IP (`login.max_attempts` within
-  `login.window`, default 5 in 5 minutes). The page never shows attempts left or
-  how long a lockout lasts, and no `Retry-After` is sent. A success clears the
-  IP's count.
+  `login.window`, default 5 in 5 minutes) and per username from any IP
+  (`login.max_attempts_per_user`, default 20 in the same window; `0` turns it
+  off). The per-username count stops slow guessing spread over many addresses,
+  but anyone who knows a username can use it to keep that account locked out,
+  so pick the number with that in mind. Usernames are counted in 4,096 keyed
+  buckets, so unknown names lock out exactly like real ones and memory stays
+  bounded. The page never shows attempts left or how long a lockout lasts, and
+  no `Retry-After` is sent. A successful sign-in doesn't count against either
+  limit.
 - The client IP comes from `X-Forwarded-For` only when the direct peer is a
   trusted proxy, reading right to left past trusted hops, so clients can't
   spoof it.
@@ -106,8 +193,10 @@ Changes to the config apply on restart.
 - Pages send a strict CSP (only the hashed inline style and script),
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and
   `Cache-Control: no-store`.
-- Argon2 runs on the blocking pool with a cap on concurrent checks. Request
-  bodies are capped at 16 KB and requests time out after 15 seconds.
+- Argon2 runs on the blocking pool with at most 4 checks at once, and at most
+  16 more sign-ins may wait for one. Beyond that, sign-ins get `503` straight
+  away without using an attempt. Request bodies are capped at 16 KB and requests
+  time out after 15 seconds.
 - `#![forbid(unsafe_code)]`. Secrets and hashes never appear in logs.
 
 ## Development
@@ -122,11 +211,21 @@ For a full check behind a real Traefik or Caddy in Docker, see
 [`e2e`](e2e/README.md):
 
 ```sh
-docker compose -f e2e/traefik/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
+docker compose -f e2e/traefik/docker-compose.yml build && sh e2e/run.sh traefik
 ```
 
 For trying it locally over plain http, set `server.insecure_dev_mode: true`
 and use a `*.localhost` portal URL. Never use dev mode in production.
+
+## Running beside Authelia
+
+rs-auth only answers "is this a signed-in user with the right password". It has
+no access rules, so every user in the config can open every app behind it, and
+it has no second factor or OIDC. Keep Authelia (or similar) in front of any
+route that needs MFA, a per-user or per-group policy, or serves OIDC clients,
+and put only password-is-enough routes behind rs-auth. A passing sign-in test
+says nothing about whether an ordinary user is kept off an admin-only app; that
+is decided by which middleware each route uses.
 
 ## Not in v1
 
@@ -145,7 +244,9 @@ CI runs on every push to `main`, every pull request, and weekly:
 - `cargo audit` and `cargo deny` (advisories, licenses, banned crates, sources;
   see `deny.toml`).
 - A Trivy scan of the built image, plus checks that it runs as non-root and
-  has no shell.
+  has no shell. Trivy only inventories the distroless base: the static binary
+  carries no package metadata, so the Rust crates are covered by `cargo audit`
+  and `cargo deny`, not by the image scan.
 - `cargo fuzz` on the hand-written parsers: cookie header, CLI args, redirect
   target and forwarded URL, `X-Forwarded-For`, token verification, and config
   validation (TOML parsing plus every rule above). Each target runs 60 s on
