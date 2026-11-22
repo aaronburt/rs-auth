@@ -24,16 +24,21 @@ jobs:
         env:
           PROPTEST_CASES: "2048"
 
-  e2e-traefik:
+  e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        proxy: [traefik, caddy]
+    name: e2e (${{ matrix.proxy }})
     env:
-      COMPOSE: docker compose -f e2e/traefik/docker-compose.yml
+      COMPOSE: docker compose -f e2e/${{ matrix.proxy }}/docker-compose.yml
     steps:
       - uses: actions/checkout@v4
       - name: Build the rs-auth image
         run: $COMPOSE build
-      - name: Run end-to-end checks through Traefik
+      - name: Run end-to-end checks through ${{ matrix.proxy }}
         run: $COMPOSE up --abort-on-container-exit --exit-code-from tester
       - name: Show container logs
         if: failure()

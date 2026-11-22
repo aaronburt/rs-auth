@@ -45,10 +45,10 @@ sign_in() {
     --data-urlencode "csrf=$t" --data-urlencode "rd=$4"
 }
 
-echo "Waiting for Traefik..."
+echo "Waiting for the proxy..."
 i=0
 until [ "$(curl -sk -o /dev/null -w '%{http_code}' $AUTH/healthz)" = 200 ]; do
-  i=$((i + 1)); [ $i -gt 30 ] && { echo "Traefik never became ready"; exit 1; }
+  i=$((i + 1)); [ $i -gt 30 ] && { echo "The proxy never became ready"; exit 1; }
   sleep 1
 done
 
@@ -136,7 +136,83 @@ check "verify from an untrusted address is refused even with a valid cookie" "$s
 lacks "and leaks no user headers" "$TMP/direct.head" "remote-user"
 
 echo
-echo "8. Sign out"
+echo "8. Open redirects through rd"
+LANDING="$AUTH/logged-in"
+while IFS= read -r rd; do
+  [ -z "$rd" ] && continue
+  s=$(req rdbad jar_aaron -G "$AUTH/login" --data-urlencode "rd=$rd")
+  check "signed in, rd=$rd lands on the portal" "$(header rdbad location)" "$LANDING"
+  s=$(req rdpage - -G "$AUTH/login" --data-urlencode "rd=$rd")
+  lacks "login page does not offer rd=$rd" "$TMP/rdpage.body" "to continue to"
+done <<'EOF_RD'
+https://evil.net/
+https://evil.net
+https://whoami.example.test.evil.net/
+https://evilexample.test/
+https://example.test.evil.net/
+http://whoami.example.test/
+https://aaron@evil.net/
+https://whoami.example.test@evil.net/
+https://user:pass@whoami.example.test/
+//evil.net/
+///evil.net/
+/\evil.net/
+https:evil.net
+https://evil.net%2F.example.test/
+https://evil.net\.example.test/
+https://evil.net#.example.test
+https://evil.net?.example.test
+javascript:alert(1)//.example.test
+data:text/html,<script>alert(1)</script>
+ https://evil.net/
+https://%65vil.net/
+EOF_RD
+s=$(sign_in jar_rd carol carol-test-pass "https://evil.net/")
+check "sign-in with a foreign rd still succeeds" "$s" 303
+check "but lands on the portal, not the foreign site" "$(header signin location)" "$LANDING"
+s=$(req rdgood jar_aaron -G "$AUTH/login" --data-urlencode "rd=https://other.example.test/x?y=1")
+check "a valid rd inside the domain is still honoured" "$(header rdgood location)" "https://other.example.test/x?y=1"
+
+echo
+echo "9. CSRF on sign-in"
+touch "$TMP/jar_csrf"
+req csrfpage jar_csrf "$AUTH/login" >/dev/null
+s=$(req nocsrf jar_csrf -X POST "$AUTH/login" \
+  --data-urlencode "username=carol" --data-urlencode "password=carol-test-pass")
+check "sign-in without a CSRF token is refused (403)" "$s" 403
+lacks "and sets no session cookie" "$TMP/nocsrf.head" "rs_auth_session="
+s=$(req badcsrf jar_csrf -X POST "$AUTH/login" \
+  --data-urlencode "username=carol" --data-urlencode "password=carol-test-pass" \
+  --data-urlencode "csrf=0000000000000000000000000000000000000000000000000000000000000000")
+check "sign-in with a wrong CSRF token is refused (403)" "$s" 403
+lacks "and sets no session cookie" "$TMP/badcsrf.head" "rs_auth_session="
+t=$(csrf_of csrfpage)
+s=$(req nocookie - -X POST "$AUTH/login" \
+  --data-urlencode "username=carol" --data-urlencode "password=carol-test-pass" \
+  --data-urlencode "csrf=$t")
+check "a stolen token without its cookie is refused (403)" "$s" 403
+s=$(req planted - -X POST "$AUTH/login" -H "Cookie: rs_auth_csrf=$t" \
+  --data-urlencode "username=carol" --data-urlencode "password=carol-test-pass" \
+  --data-urlencode "csrf=$t")
+check "a planted cookie without the __Host- prefix is refused (403)" "$s" 403
+
+echo
+echo "10. Config edited and rs-auth restarted"
+CHANGED=https://changed.example.test
+s=$(sign_in jar_carol carol carol-test-pass "")
+check "carol signs in" "$s" 303
+s=$(req chcarol jar_carol "$CHANGED/")
+check "an unchanged user keeps their session after the restart" "$s" 200
+contains "and is still carol" "$TMP/chcarol.body" "Remote-User: carol"
+s=$(req chaaron jar_aaron "$CHANGED/")
+check "a password change ends the old session" "$s" 302
+s=$(req chguest jar_guest "$CHANGED/")
+check "removing a user ends their session" "$s" 302
+s=$(req stillok jar_aaron "$APP/")
+check "the same cookie still works where the password did not change" "$s" 200
+
+echo
+echo "11. Sign out"
 s=$(req logoutpage jar_aaron "$AUTH/logout")
 check "GET /logout shows the confirm page" "$s" 200
 contains "asks first" "$TMP/logoutpage.body" "Sign out?"
@@ -153,7 +229,7 @@ s=$(req reuse - -H "Cookie: rs_auth_session=$sess" "$APP/")
 check "a copied cookie stops working after sign-out (revoked)" "$s" 302
 
 echo
-echo "9. Rate limit (run last: it locks out this container's IP)"
+echo "12. Rate limit (run last: it locks out this container's IP)"
 touch "$TMP/jar_rl"
 req rlpage jar_rl "$AUTH/login" >/dev/null
 t=$(csrf_of rlpage)

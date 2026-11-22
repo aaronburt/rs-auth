@@ -1,0 +1,32 @@
+{
+	local_certs
+	skip_install_trust
+	auto_https disable_redirects
+}
+
+(rs_auth) {
+	forward_auth rs-auth:9091 {
+		uri /api/verify
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+	}
+}
+
+auth.example.test {
+	tls internal
+	reverse_proxy rs-auth:9091
+}
+
+whoami.example.test, other.example.test {
+	tls internal
+	import rs_auth
+	reverse_proxy whoami:80
+}
+
+changed.example.test {
+	tls internal
+	forward_auth rs-auth-changed:9091 {
+		uri /api/verify
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+	}
+	reverse_proxy whoami:80
+}

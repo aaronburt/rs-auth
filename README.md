@@ -111,8 +111,8 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-For a full check behind a real Traefik in Docker, see
-[`e2e/traefik`](e2e/traefik/README.md):
+For a full check behind a real Traefik or Caddy in Docker, see
+[`e2e`](e2e/README.md):
 
 ```sh
 docker compose -f e2e/traefik/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
