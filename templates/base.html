@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>{% block title %}{% endblock %} · rs-auth</title>
+<style>{{ css|safe }}</style>
+</head>
+<body>
+<main>
+<div class="card">
+{% block content %}{% endblock %}
+</div>
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

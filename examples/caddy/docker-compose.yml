@@ -1,0 +1,36 @@
+# rs-auth guarding a whoami app behind Caddy.
+# config.yaml: server.trusted_proxies: [172.31.0.0/24]
+name: rs-auth-caddy
+
+networks:
+  proxy:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+
+secrets:
+  rs_auth_jwt:
+    file: ./jwt.secret
+
+services:
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile.whoami:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks: [proxy]
+
+  rs-auth:
+    build: ../..
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+    secrets: [rs_auth_jwt]
+    networks: [proxy]
+
+  whoami:
+    image: traefik/whoami
+    networks: [proxy]
+
+volumes:
+  caddy_data:

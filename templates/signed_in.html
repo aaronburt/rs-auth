@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Signed in{% endblock %}
+{% block content %}
+<div class="head">
+<h1>You're signed in</h1>
+<p class="sub">Signed in as <strong>{{ display_name }}</strong>{% if display_name != username %} ({{ username }}){% endif %}. You can now open any protected app.</p>
+</div>
+<div class="actions">
+<a class="btn btn-secondary" href="/logout">Sign out</a>
+</div>
+{% endblock %}

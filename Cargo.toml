@@ -1,0 +1,47 @@
+[package]
+name = "rs-auth"
+version = "1.0.0"
+description = "A small forward-auth login portal for Traefik and Caddy"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+askama = "0.16.1"
+axum = "0.8"
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+base64 = "0.23.1"
+clap = { version = "4.6.8", features = ["derive", "env"] }
+ipnet = "2.12.2"
+jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
+rand = "0.10.4"
+rpassword = "7.5.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml = "0.9.34"
+sha2 = "0.11.1"
+subtle = "2.6.1"
+thiserror = "2.0.21"
+time = "0.3.55"
+tokio = { version = "1.54.1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout", "set-header"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.8"
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Argon2 is painfully slow unoptimised; keep debug builds and tests quick.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="head">
+<h1>Sign in</h1>
+{% if let Some(host) = target_host %}<p class="sub">to continue to <strong>{{ host }}</strong></p>{% endif %}
+</div>
+{% if is_locked() %}
+<div class="alert error" role="alert" id="form-msg">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+<strong>Too many sign-in attempts</strong>
+</div>
+{% else if is_wrong_password() %}
+<div class="alert warn" role="alert" id="form-msg">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16.5v.01"></path></svg>
+<span>Invalid username or password.</span>
+</div>
+{% else if is_expired() %}
+<div class="alert warn" role="alert" id="form-msg">
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16.5v.01"></path></svg>
+<span>This sign-in form expired. Please try again.</span>
+</div>
+{% endif %}
+<form method="post" action="/login"{% if state != LoginState::Normal %} aria-describedby="form-msg"{% endif %}>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="rd" value="{{ rd }}">
+<fieldset{% if is_locked() %} disabled{% endif %}>
+<div class="field">
+<label for="username">Username</label>
+<input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="64" value="{{ username }}"{% if !focus_password() && !is_locked() %} autofocus{% endif %}>
+</div>
+<div class="field">
+<label for="password">Password</label>
+<div class="pw">
+<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"{% if is_wrong_password() %} aria-invalid="true"{% endif %}{% if focus_password() %} autofocus{% endif %}>
+<button type="button" class="reveal" data-reveal="password" aria-label="Show password" aria-pressed="false" hidden>Show</button>
+</div>
+</div>
+<button type="submit" class="btn">Sign in</button>
+</fieldset>
+</form>
+{% endblock %}
+{% block scripts %}{% if !is_locked() %}<script>{{ script|safe }}</script>{% endif %}{% endblock %}

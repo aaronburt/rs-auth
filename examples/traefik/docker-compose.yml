@@ -1,0 +1,59 @@
+# rs-auth guarding a whoami app behind Traefik v3.
+# 1. Put a config.yaml next to this file (copy ../../config.example.yaml).
+#    Set server.trusted_proxies to the "proxy" network below (172.30.0.0/24).
+# 2. openssl rand -hex 32 > jwt.secret
+# 3. docker compose up -d, then open https://whoami.example.com
+name: rs-auth-traefik
+
+networks:
+  proxy:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+secrets:
+  rs_auth_jwt:
+    file: ./jwt.secret
+
+services:
+  traefik:
+    image: traefik:v3.3
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      # Use your own certificate resolver here (ACME, DNS challenge, ...).
+    ports: ["80:80", "443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [proxy]
+
+  rs-auth:
+    build: ../..
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+    secrets: [rs_auth_jwt]
+    networks: [proxy]
+    labels:
+      - traefik.enable=true
+      # The portal itself.
+      - traefik.http.routers.rs-auth.rule=Host(`auth.example.com`)
+      - traefik.http.routers.rs-auth.entrypoints=websecure
+      - traefik.http.routers.rs-auth.tls=true
+      - traefik.http.services.rs-auth.loadbalancer.server.port=9091
+      # The middleware other routers use.
+      - traefik.http.middlewares.rs-auth.forwardauth.address=http://rs-auth:9091/api/verify
+      - traefik.http.middlewares.rs-auth.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.rs-auth.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Email,Remote-Name
+
+  whoami:
+    image: traefik/whoami
+    networks: [proxy]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.whoami.rule=Host(`whoami.example.com`)
+      - traefik.http.routers.whoami.entrypoints=websecure
+      - traefik.http.routers.whoami.tls=true
+      - traefik.http.routers.whoami.middlewares=rs-auth@docker
