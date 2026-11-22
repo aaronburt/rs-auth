@@ -241,3 +241,9 @@ impl Environment for FakeEnvSecret {
         unreachable!()
     }
 }
+
+#[test]
+fn utf8_bom_is_accepted() {
+    let with_bom = format!("\u{FEFF}{}", base());
+    assert!(Config::from_yaml(&with_bom, &NoEnv).is_ok());
+}

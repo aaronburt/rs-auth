@@ -308,6 +308,8 @@ impl Config {
 
     /// Parse and validate YAML text.
     pub fn from_yaml(text: &str, env: &dyn Environment) -> Result<Loaded, ConfigError> {
+        // Windows editors and PowerShell often save UTF-8 with a BOM.
+        let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
         let raw: RawConfig = serde_yaml::from_str(text)?;
         let mut warnings = Vec::new();
 
