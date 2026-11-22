@@ -1,7 +1,13 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -15,6 +21,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+        env:
+          PROPTEST_CASES: "2048"
 
   e2e-traefik:
     runs-on: ubuntu-latest
@@ -38,6 +46,59 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit --deny yanked
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          command: check advisories bans licenses sources
+
+  image-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t rs-auth:ci .
+      - name: Check the image runs as non-root and has no shell
+        run: |
+          test "$(docker inspect rs-auth:ci --format '{{.Config.User}}')" = "65532"
+          ! docker run --rm --entrypoint /bin/sh rs-auth:ci -c true
+          docker run --rm rs-auth:ci --version
+      - name: Scan with Trivy
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.58.1 image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL --scanners vuln rs-auth:ci
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [cookie_header, cli_args, redirect_target, forwarded_for, token_verify]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        run: |
+          SECS=60
+          if [ "${{ github.event_name }}" = "schedule" ]; then SECS=900; fi
+          cargo fuzz run ${{ matrix.target }} -O -- -max_total_time=$SECS
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts

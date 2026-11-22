@@ -188,7 +188,9 @@ mod tests {
             iss: ISS.into(),
             sub: "aaron".into(),
             iat: now,
-            exp: (now as i64 + exp_offset) as u64,
+            exp: now
+                .checked_add_signed(exp_offset)
+                .expect("test offset fits"),
             jti: new_jti(),
             pwh: "abc".into(),
             ver: 1,
@@ -206,7 +208,9 @@ mod tests {
     #[test]
     fn expired_is_rejected_after_leeway() {
         let s = Hs256Signer::new(SECRET, ISS);
-        let t = s.sign(&claims(-(LEEWAY_SECS as i64) - 5)).unwrap();
+        let t = s
+            .sign(&claims(-i64::try_from(LEEWAY_SECS).expect("small") - 5))
+            .unwrap();
         assert_eq!(s.verify(&t), Err(TokenError::Expired));
         let t = s.sign(&claims(-5)).unwrap();
         assert!(s.verify(&t).is_ok());

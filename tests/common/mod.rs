@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic, clippy::string_slice)]
 #![allow(dead_code)]
 
 use std::net::SocketAddr;

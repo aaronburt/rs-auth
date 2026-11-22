@@ -127,3 +127,19 @@ Per-domain access rules, nginx support, config hot reload, remember-me,
 server-side sessions, 2FA, password reset, LDAP or database users, and an
 OIDC provider. Token signing sits behind a `TokenSigner` trait and `iss` is
 set from day one, so OIDC can be added later without a rewrite.
+
+## Automated security checks
+
+CI runs on every push to `main`, every pull request, and weekly:
+
+- `cargo fmt`, `cargo clippy -D warnings` with lossy casts, `unwrap`, `panic!`
+  and string slicing denied (see `[lints.clippy]` in `Cargo.toml`).
+- Unit, integration and property tests (`tests/properties.rs`, via proptest).
+- `cargo audit` and `cargo deny` (advisories, licenses, banned crates, sources;
+  see `deny.toml`).
+- A Trivy scan of the built image, plus checks that it runs as non-root and
+  has no shell.
+- `cargo fuzz` on the hand-written parsers: cookie header, CLI args, redirect
+  target and forwarded URL, `X-Forwarded-For`, and token verification. Each
+  target runs 60 s on pull requests and 15 min weekly. Run one locally with
+  `cargo +nightly fuzz run cookie_header` from `fuzz/`.

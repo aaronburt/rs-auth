@@ -150,7 +150,7 @@ check "POST /logout with the token signs out" "$s" 303
 s=$(req afterlogout jar_aaron "$APP/")
 check "app redirects to login again" "$s" 302
 s=$(req reuse - -H "Cookie: rs_auth_session=$sess" "$APP/")
-check "the old token still works until expiry (stateless, by design)" "$s" 200
+check "a copied cookie stops working after sign-out (revoked)" "$s" 302
 
 echo
 echo "9. Rate limit (run last: it locks out this container's IP)"

@@ -97,7 +97,7 @@ impl CookieJar {
         Self::default()
     }
 
-    fn parse<'a>(values: impl Iterator<Item = &'a str>) -> Self {
+    pub fn parse<'a>(values: impl Iterator<Item = &'a str>) -> Self {
         let mut seen: Vec<(String, String)> = Vec::new();
         for header in values {
             for pair in header.split(';') {

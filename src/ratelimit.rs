@@ -272,13 +272,13 @@ mod tests {
     fn sweeps_stale_entries_with_cooldown() {
         let rl = RateLimiter::new(5, Duration::from_secs(1));
         let t = Instant::now();
-        for i in 0..SWEEP_THRESHOLD as u32 {
+        for i in 0..u32::try_from(SWEEP_THRESHOLD).expect("small constant") {
             fail(&rl, IpAddr::from(i.to_be_bytes()), t);
         }
         assert_eq!(rl.tracked(), SWEEP_THRESHOLD);
         fail(&rl, ip(1), t + Duration::from_secs(5));
         assert_eq!(rl.tracked(), 1);
-        for i in 0..SWEEP_THRESHOLD as u32 {
+        for i in 0..u32::try_from(SWEEP_THRESHOLD).expect("small constant") {
             fail(
                 &rl,
                 IpAddr::from((i + 1_000_000).to_be_bytes()),
