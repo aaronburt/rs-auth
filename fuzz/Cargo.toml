@@ -1,0 +1,50 @@
+[package]
+name = "rs-auth-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rs-auth = { path = ".." }
+axum = "0.8"
+ipnet = "2.12.2"
+
+[[bin]]
+name = "cookie_header"
+path = "fuzz_targets/cookie_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cli_args"
+path = "fuzz_targets/cli_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redirect_target"
+path = "fuzz_targets/redirect_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "forwarded_for"
+path = "fuzz_targets/forwarded_for.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "token_verify"
+path = "fuzz_targets/token_verify.rs"
+test = false
+doc = false
+bench = false
+[workspace]

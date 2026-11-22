@@ -3,6 +3,7 @@ name = "rs-auth"
 version = "1.0.0"
 description = "A small forward-auth login portal for Traefik and Caddy"
 edition = "2024"
+publish = false
 
 [dependencies]
 argon2 = "0.6.0"
@@ -24,12 +25,25 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 url = "2.5.8"
 
 [dev-dependencies]
+proptest = "1"
 tokio = { version = "1.54.1", features = ["io-util"] }
 http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[lints.clippy]
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+unwrap_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+string_slice = "deny"
 
 [profile.release]
 lto = "thin"

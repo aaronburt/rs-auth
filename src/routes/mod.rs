@@ -47,7 +47,7 @@ async fn guard(limit: Duration, req: Request, next: Next) -> Response {
             return StatusCode::REQUEST_TIMEOUT.into_response();
         }
     };
-    tracing::debug!(%method, %path, status = res.status().as_u16(), ms = started.elapsed().as_millis() as u64, "request");
+    tracing::debug!(%method, %path, status = res.status().as_u16(), ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX), "request");
     res
 }
 

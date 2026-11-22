@@ -31,8 +31,8 @@ container logs if a check fails.
 7. Calling rs-auth directly, skipping Traefik, is refused even with a valid
    cookie (`trusted_proxies` only lists Traefik's address).
 8. `GET /logout` only asks. `POST /logout` needs its CSRF token and then
-   signs out. A copied token keeps working until it expires, because v1
-   sessions are stateless; bump `session.version` to cut them all off.
+   signs out. Signing out revokes that token, so a copied cookie stops
+   working too.
 9. Five failed sign-ins lock the client out with a 429 and no `Retry-After`,
    even with a rotating `X-Forwarded-For`.
 

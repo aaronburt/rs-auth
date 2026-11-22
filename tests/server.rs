@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::panic, clippy::string_slice)]
 mod common;
 
 use std::net::SocketAddr;
