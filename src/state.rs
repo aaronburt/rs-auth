@@ -96,7 +96,7 @@ impl AppState {
             tracing::debug!(user = %claims.sub, "session from before a password change");
             return None;
         }
-        if self.revocations.is_revoked(&claims.jti) {
+        if self.revocations.is_revoked(&claims.jti, claims.iat) {
             tracing::debug!(user = %claims.sub, "session was signed out");
             return None;
         }
