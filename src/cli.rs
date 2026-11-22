@@ -11,7 +11,7 @@ Usage:
   rs-auth healthcheck [address]          Exit 0 if /healthz answers (default 127.0.0.1:9091)
   rs-auth --version | --help
 
-The config file defaults to $RS_AUTH_CONFIG, then config.yaml.
+The config file defaults to $RS_AUTH_CONFIG, then config.toml.
 The log level comes from RUST_LOG (error, warn, info, debug or trace; default info).";
 
 pub enum Command {
@@ -27,7 +27,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Option<Command>, String> {
         std::env::var_os("RS_AUTH_CONFIG")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("config.yaml"))
+            .unwrap_or_else(|| PathBuf::from("config.toml"))
     };
     let mut args = args.into_iter();
     let Some(cmd) = args.next() else {
@@ -101,14 +101,14 @@ mod tests {
 
     #[test]
     fn config_flag_forms() {
-        assert_eq!(cfg(&["serve", "-c", "a.yaml"]), PathBuf::from("a.yaml"));
+        assert_eq!(cfg(&["serve", "-c", "a.toml"]), PathBuf::from("a.toml"));
         assert_eq!(
-            cfg(&["serve", "--config", "b.yaml"]),
-            PathBuf::from("b.yaml")
+            cfg(&["serve", "--config", "b.toml"]),
+            PathBuf::from("b.toml")
         );
         assert_eq!(
-            cfg(&["check-config", "--config=c.yaml"]),
-            PathBuf::from("c.yaml")
+            cfg(&["check-config", "--config=c.toml"]),
+            PathBuf::from("c.toml")
         );
     }
 

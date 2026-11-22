@@ -9,16 +9,17 @@ use rs_auth::redirect::{original_url, validate_rd};
 fn config() -> &'static Config {
     static C: OnceLock<Config> = OnceLock::new();
     C.get_or_init(|| {
-        let yaml = r#"
-server:
-  portal_url: https://auth.example.com
-  trusted_proxies: [172.18.0.0/16]
-session:
-  domain: example.com
-  jwt_secret: "fuzz-secret-fuzz-secret-fuzz-secret!!"
-users:
-  a:
-    password: "$argon2id$v=19$m=256,t=1,p=1$c2FsdHNhbHRzYWx0$J0nN0gBOIJPj9TKkNcWXwOGg3jBDAGx2fgDJ5Q1kJpQ"
+        let text = r#"
+[server]
+portal_url = "https://auth.example.com"
+trusted_proxies = ["172.18.0.0/16"]
+
+[session]
+domain = "example.com"
+jwt_secret = "fuzz-secret-fuzz-secret-fuzz-secret!!"
+
+[users.a]
+password = '$argon2id$v=19$m=256,t=1,p=1$c2FsdHNhbHRzYWx0$J0nN0gBOIJPj9TKkNcWXwOGg3jBDAGx2fgDJ5Q1kJpQ'
 "#;
         struct NoEnv;
         impl rs_auth::config::Environment for NoEnv {
@@ -29,7 +30,7 @@ users:
                 Err(std::io::ErrorKind::NotFound.into())
             }
         }
-        Config::from_yaml(yaml, &NoEnv).expect("fuzz config").config
+        Config::from_toml(text, &NoEnv).expect("fuzz config").config
     })
 }
 

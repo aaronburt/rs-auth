@@ -15,7 +15,7 @@ RUN cargo build --release --locked --target "$(cat /rust-target)" \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /rs-auth /usr/local/bin/rs-auth
 EXPOSE 9091
-ENV RS_AUTH_CONFIG=/config/config.yaml
+ENV RS_AUTH_CONFIG=/config/config.toml
 HEALTHCHECK --interval=30s --timeout=5s CMD ["/usr/local/bin/rs-auth", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/rs-auth"]
 CMD ["serve"]

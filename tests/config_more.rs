@@ -7,11 +7,11 @@ use common::*;
 use rs_auth::config::{Config, ConfigError, HumanDuration};
 
 fn base() -> String {
-    yaml(1, "[admins]", false)
+    toml(1, &["admins"], false)
 }
 
 fn err(y: &str) -> String {
-    match Config::from_yaml(y, &NoEnv) {
+    match Config::from_toml(y, &NoEnv) {
         Ok(_) => panic!("config should have been rejected:\n{y}"),
         Err(e) => e.to_string(),
     }
@@ -25,151 +25,118 @@ fn swap(find: &str, with: &str) -> String {
 
 #[test]
 fn rejected_values_name_the_problem() {
+    let portal = "portal_url = \"https://auth.example.com\"";
+    let proxies = "trusted_proxies = [\"172.18.0.0/16\", \"::1\"]";
+    let domain = "domain = \"example.com\"";
     let cases: Vec<(String, &str)> = vec![
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: https://auth.example.com/?a=1",
-            ),
+            swap(portal, "portal_url = \"https://auth.example.com/?a=1\""),
             "query or fragment",
         ),
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: https://auth.example.com/#top",
-            ),
+            swap(portal, "portal_url = \"https://auth.example.com/#top\""),
             "query or fragment",
         ),
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: https://auth.example.com/app",
-            ),
+            swap(portal, "portal_url = \"https://auth.example.com/app\""),
             "root of its own host",
         ),
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: https://auth.other.net",
-            ),
+            swap(portal, "portal_url = \"https://auth.other.net\""),
             "or a subdomain of it",
         ),
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: ftp://auth.example.com",
-            ),
+            swap(portal, "portal_url = \"ftp://auth.example.com\""),
             "unsupported scheme",
         ),
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: \"https://u:p@auth.example.com\"",
-            ),
+            swap(portal, "portal_url = \"https://u:p@auth.example.com\""),
             "username or password",
         ),
+        (swap(portal, "portal_url = \"not a url\""), "is not a URL"),
+        (swap(proxies, "trusted_proxies = []"), "at least one"),
         (
-            swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: \"not a url\"",
-            ),
-            "is not a URL",
-        ),
-        (
-            swap(
-                "trusted_proxies: [172.18.0.0/16, \"::1\"]",
-                "trusted_proxies: []",
-            ),
-            "at least one",
-        ),
-        (
-            swap(
-                "trusted_proxies: [172.18.0.0/16, \"::1\"]",
-                "trusted_proxies: [\"not-an-ip\"]",
-            ),
+            swap(proxies, "trusted_proxies = [\"not-an-ip\"]"),
             "not an IP address or CIDR",
         ),
+        (swap(domain, "domain = \"com\""), "must be a domain like"),
+        (swap(domain, "domain = \"\""), "must be a domain like"),
+        (swap(domain, "domain = \"10.0.0.1\""), "not an IP address"),
+        (swap(domain, "domain = \"exa_mple.com\""), "not allowed"),
+        (swap(domain, "domain = \"-a.example.com\""), "not allowed"),
+        (swap(domain, "domain = \"a..example.com\""), "not allowed"),
+        (swap("expiry = \"12h\"", "expiry = \"30s\""), "at least 1m"),
         (
-            swap("domain: example.com", "domain: com"),
-            "must be a domain like",
+            swap("expiry = \"12h\"", "expiry = \"500d\""),
+            "at most 400d",
         ),
         (
-            swap("domain: example.com", "domain: \"\""),
-            "must be a domain like",
-        ),
-        (
-            swap("domain: example.com", "domain: 10.0.0.1"),
-            "not an IP address",
-        ),
-        (
-            swap("domain: example.com", "domain: exa_mple.com"),
-            "not allowed",
-        ),
-        (
-            swap("domain: example.com", "domain: -a.example.com"),
-            "not allowed",
-        ),
-        (
-            swap("domain: example.com", "domain: a..example.com"),
-            "not allowed",
-        ),
-        (swap("  expiry: 12h", "  expiry: 30s"), "at least 1m"),
-        (swap("  expiry: 12h", "  expiry: 500d"), "at most 400d"),
-        (
-            swap(
-                "  version: 1\n",
-                "  version: 1\n  cookie_name: \"bad name\"\n",
-            ),
+            swap("version = 1\n", "version = 1\ncookie_name = \"bad name\"\n"),
             "may only use letters",
         ),
         (
-            swap("  version: 1\n", "  version: 1\n  cookie_name: \"\"\n"),
+            swap("version = 1\n", "version = 1\ncookie_name = \"\"\n"),
             "may only use letters",
         ),
         (
             swap(
-                "  version: 1\n",
-                "  version: 1\n  cookie_name: rs_auth_csrf\n",
+                "version = 1\n",
+                "version = 1\ncookie_name = \"rs_auth_csrf\"\n",
             ),
             "CSRF cookie",
         ),
         (
             swap(
-                "portal_url: https://auth.example.com",
-                "portal_url: https://auth.example.com\n  default_redirect_url: https://evil.net",
+                portal,
+                "portal_url = \"https://auth.example.com\"\ndefault_redirect_url = \"https://evil.net\"",
             ),
             "default_redirect_url host",
         ),
         (
-            swap("groups: [admins]", "groups: [\"a,b\"]"),
+            swap("groups = [\"admins\"]", "groups = [\"a,b\"]"),
             "no commas or spaces",
         ),
         (
-            swap("groups: [admins]", "groups: [\"\"]"),
+            swap("groups = [\"admins\"]", "groups = [\"\"]"),
             "must be non-empty",
         ),
         (
-            swap("groups: [admins]", "groups: [\"a b\"]"),
+            swap("groups = [\"admins\"]", "groups = [\"a b\"]"),
             "no commas or spaces",
         ),
         (
-            swap("display_name: Aaron Example", "display_name: \"A\\x07\""),
+            swap(
+                "display_name = \"Aaron Example\"",
+                "display_name = \"A\\u0007\"",
+            ),
             "control characters",
         ),
         (
-            swap("email: aaron@example.com", "email: \"a b@example.com\""),
+            swap(
+                "email = \"aaron@example.com\"",
+                "email = \"a b@example.com\"",
+            ),
             "does not look like an email",
         ),
         (
-            swap("email: aaron@example.com", "email: \"@example.com\""),
+            swap("email = \"aaron@example.com\"", "email = \"@example.com\""),
             "does not look like an email",
         ),
         (
-            swap("email: aaron@example.com", "email: \"a@b@c\""),
+            swap("email = \"aaron@example.com\"", "email = \"a@b@c\""),
             "does not look like an email",
         ),
-        (swap("  aaron:\n", "  \"bad name\":\n"), "may only use"),
-        (swap("  max_attempts: 5", "  max_attempts: 0"), "at least 1"),
+        (
+            swap("[users.aaron]\n", "[users.\"bad name\"]\n"),
+            "may only use",
+        ),
+        (swap("max_attempts = 5", "max_attempts = 0"), "at least 1"),
+        (
+            swap("max_attempts = 5", "max_attempts = -1"),
+            "max_attempts",
+        ),
+        (swap("version = 1", "version = \"1\""), "version"),
+        (swap("[login]\n", "[login]\n[login]\n"), "not valid TOML"),
     ];
     for (y, want) in cases {
         let e = err(&y);
@@ -180,15 +147,15 @@ fn rejected_values_name_the_problem() {
 #[test]
 fn http_needs_dev_mode_and_dev_mode_warns() {
     let http = swap(
-        "portal_url: https://auth.example.com",
-        "portal_url: http://auth.example.com",
+        "portal_url = \"https://auth.example.com\"",
+        "portal_url = \"http://auth.example.com\"",
     );
     assert!(err(&http).contains("insecure_dev_mode"));
     let dev = swap(
-        "portal_url: https://auth.example.com",
-        "portal_url: http://auth.example.com\n  insecure_dev_mode: true",
+        "portal_url = \"https://auth.example.com\"",
+        "portal_url = \"http://auth.example.com\"\ninsecure_dev_mode = true",
     );
-    let loaded = Config::from_yaml(&dev, &NoEnv).unwrap();
+    let loaded = Config::from_toml(&dev, &NoEnv).unwrap();
     assert!(
         loaded
             .warnings
@@ -202,19 +169,20 @@ fn http_needs_dev_mode_and_dev_mode_warns() {
 fn omitted_options_get_their_defaults() {
     let y = format!(
         r#"
-server:
-  portal_url: https://auth.example.com
-  trusted_proxies: [172.18.0.0/16]
-session:
-  domain: example.com
-  jwt_secret: "{SECRET}"
-users:
-  aaron:
-    password: "{}"
+[server]
+portal_url = "https://auth.example.com"
+trusted_proxies = ["172.18.0.0/16"]
+
+[session]
+domain = "example.com"
+jwt_secret = "{SECRET}"
+
+[users.aaron]
+password = '{}'
 "#,
         aaron_hash()
     );
-    let c = Config::from_yaml(&y, &NoEnv).unwrap().config;
+    let c = Config::from_toml(&y, &NoEnv).unwrap().config;
     assert_eq!(c.server.address.to_string(), "0.0.0.0:9091");
     assert_eq!(c.session.version, 1);
     assert_eq!(c.session.expiry, Duration::from_secs(12 * 3600));
@@ -237,7 +205,7 @@ fn durations_print_in_seconds() {
 fn load_file_reads_warns_and_fails_clearly() {
     let dir = std::env::temp_dir().join(format!("rs-auth-cfg-{}", rs_auth::token::new_jti()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("config.yaml");
+    let path = dir.join("config.toml");
     std::fs::write(&path, base()).unwrap();
 
     let loaded = Config::load_file(&path).unwrap();
@@ -253,21 +221,35 @@ fn load_file_reads_warns_and_fails_clearly() {
         assert!(!w.iter().any(|w| w.contains("world-readable")), "{w:?}");
     }
 
-    let missing = Config::load_file(&dir.join("nope.yaml")).err().unwrap();
+    let missing = Config::load_file(&dir.join("nope.toml")).err().unwrap();
     assert!(matches!(missing, ConfigError::Read { .. }));
     assert!(missing.to_string().contains("could not read"));
 
-    std::fs::write(&path, "server: [unclosed").unwrap();
+    std::fs::write(&path, "[server\nportal_url = ").unwrap();
     let bad = Config::load_file(&path).err().unwrap();
-    assert!(bad.to_string().contains("not valid YAML"), "{bad}");
+    assert!(matches!(bad, ConfigError::Toml(_)));
+    assert!(bad.to_string().contains("not valid TOML"), "{bad}");
+    assert!(
+        bad.to_string().contains("line 1"),
+        "points at the line: {bad}"
+    );
+
+    let old = dir.join("config.yaml");
+    std::fs::write(&old, "server:\n  address: 0.0.0.0:9091\n").unwrap();
+    for name in ["config.yaml", "config.YML"] {
+        let e = Config::load_file(&dir.join(name)).err().unwrap();
+        assert!(matches!(e, ConfigError::Yaml(_)));
+        assert!(e.to_string().contains("now reads TOML"), "{e}");
+        assert!(e.to_string().contains(name), "{e}");
+    }
 
     let secret_file = dir.join("secret");
     std::fs::write(&secret_file, format!("{SECRET}\n")).unwrap();
     std::fs::write(
         &path,
         base().replace(
-            &format!("jwt_secret: \"{SECRET}\""),
-            &format!("jwt_secret_file: {}", secret_file.display()),
+            &format!("jwt_secret = \"{SECRET}\""),
+            &format!("jwt_secret_file = {:?}", secret_file.display().to_string()),
         ),
     )
     .unwrap();

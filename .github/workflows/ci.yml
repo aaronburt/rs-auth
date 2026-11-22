@@ -109,7 +109,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [cookie_header, cli_args, redirect_target, forwarded_for, token_verify]
+        target: [cookie_header, cli_args, redirect_target, forwarded_for, token_verify, config_parse]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

@@ -31,7 +31,7 @@ fn state_with(
 }
 
 fn default_state() -> SharedState {
-    AppState::new(config_from(&yaml(1, "[admins]", false)))
+    AppState::new(config_from(&toml(1, &["admins"], false)))
 }
 
 fn claims_for(state: &SharedState, iat: u64, exp: u64) -> Claims {
@@ -59,7 +59,7 @@ impl TokenSigner for FailingSigner {
 
 #[tokio::test]
 async fn user_data_that_cannot_be_a_header_fails_closed() {
-    let mut config = config_from(&yaml(1, "[admins]", false));
+    let mut config = config_from(&toml(1, &["admins"], false));
     config.users.get_mut("aaron").unwrap().display_name = "Aaron\nInjected: yes".into();
     let app = rs_auth::router(AppState::new(config));
     let session = sign_in(&app, "aaron", "correct horse").await;
@@ -106,7 +106,7 @@ async fn a_full_limiter_table_refuses_new_clients_at_the_handler() {
 
 #[tokio::test]
 async fn a_signing_failure_is_a_500_with_no_cookie() {
-    let config = config_from(&yaml(1, "[admins]", false));
+    let config = config_from(&toml(1, &["admins"], false));
     let app = rs_auth::router(state_with(
         config,
         Box::new(FailingSigner),
@@ -175,7 +175,7 @@ async fn an_expired_session_cookie_is_treated_as_signed_out() {
 
 #[tokio::test]
 async fn overflowing_the_revocation_list_ends_older_sessions_but_not_new_ones() {
-    let config = config_from(&yaml(1, "[admins]", false));
+    let config = config_from(&toml(1, &["admins"], false));
     let signer = Box::new(token::Hs256Signer::new(
         &config.session.secret,
         &config.issuer(),

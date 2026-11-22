@@ -9,13 +9,13 @@ headers; anything else gets a `302` to the login page. After signing in, a
 signed JWT cookie shared across your domain lets you open every protected app
 without seeing the login page again until it expires.
 
-One binary, one `config.yaml`, no database.
+One binary, one `config.toml`, no database.
 
 ## Quick start
 
 ```sh
 cargo build --release
-cp config.example.yaml config.yaml && chmod 600 config.yaml
+cp config.example.toml config.toml && chmod 600 config.toml
 ./target/release/rs-auth hash-password      # paste the output into users.<name>.password
 openssl rand -hex 32 > jwt.secret           # point session.jwt_secret_file at it
 ./target/release/rs-auth check-config
@@ -32,9 +32,9 @@ Then wire up your proxy: see [`examples/traefik`](examples/traefik) or
 
 | Command | Does |
 | --- | --- |
-| `rs-auth serve [-c config.yaml]` | Runs the portal. `RS_AUTH_CONFIG` also sets the path. |
+| `rs-auth serve [-c config.toml]` | Runs the portal. `RS_AUTH_CONFIG` also sets the path. |
 | `rs-auth hash-password [--stdin]` | Prompts twice and prints an Argon2id hash. |
-| `rs-auth check-config [-c config.yaml]` | Validates the config without starting. |
+| `rs-auth check-config [-c config.toml]` | Validates the config without starting. |
 | `rs-auth healthcheck [addr]` | Exits 0 if `/healthz` answers. Used by the Docker image. |
 
 Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (default
@@ -54,7 +54,7 @@ Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (defau
 
 ## Config
 
-See [`config.example.yaml`](config.example.yaml) for every option. The server
+See [`config.example.toml`](config.example.toml) for every option. The server
 refuses to start on a bad config. The rules:
 
 - Passwords must be Argon2id PHC strings. Plain text is rejected.
@@ -65,7 +65,10 @@ refuses to start on a bad config. The rules:
   `session.domain`.
 - `server.trusted_proxies` must list your proxy's address or network.
 - Unknown keys are errors, so typos don't silently do nothing.
-- Durations look like `30m`, `12h`, `7d`.
+- The file is TOML. Durations are strings like `"30m"`, `"12h"`, `"7d"`. Each
+  user is a `[users.<name>]` table; put its hash in single quotes
+  (`'$argon2id$...'`), a TOML literal string, so nothing in it is read as an
+  escape. A `.yaml`/`.yml` path is refused with a hint to convert it.
 - The server warns if the config file is world-readable.
 
 Changes to the config apply on restart.
@@ -75,7 +78,7 @@ Changes to the config apply on restart.
 - The cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, set on
   `session.domain`, and lasts `session.expiry`.
 - Verify always uses the user's **current** groups from the config. Removing a
-  user from the YAML locks them out on their next request.
+  user from the config locks them out on their next request.
 - Bump `session.version` to sign everyone out at once.
 - Signing out revokes that session's token ID (`jti`), so a copied cookie stops
   working too. Set `session.revocation_file` to keep the list across restarts.
@@ -144,6 +147,7 @@ CI runs on every push to `main`, every pull request, and weekly:
 - A Trivy scan of the built image, plus checks that it runs as non-root and
   has no shell.
 - `cargo fuzz` on the hand-written parsers: cookie header, CLI args, redirect
-  target and forwarded URL, `X-Forwarded-For`, and token verification. Each
-  target runs 60 s on pull requests and 15 min weekly. Run one locally with
+  target and forwarded URL, `X-Forwarded-For`, token verification, and config
+  validation (TOML parsing plus every rule above). Each target runs 60 s on
+  pull requests and 15 min weekly. Run one locally with
   `cargo +nightly fuzz run cookie_header` from `fuzz/`.

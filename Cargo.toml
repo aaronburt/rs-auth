@@ -11,12 +11,12 @@ askama = "0.16.1"
 axum = "0.8"
 getrandom = "0.4"
 base64 = "0.23.1"
+toml = { version = "1.2", default-features = false, features = ["std", "serde", "parse"] }
 hmac = "0.13"
 ipnet = "2.12.2"
 jsonwebtoken = { version = "12.0.0", default-features = false }
 rpassword = "7.5.5"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_yaml_ng = "0.10"
 sha2 = "0.11.1"
 subtle = "2.6.1"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "signal", "sync", "time", "macros"] }
