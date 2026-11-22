@@ -1,11 +1,38 @@
+{
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 60s
+		}
+		max_header_size 32KiB
+	}
+}
+
+# Cookie in copy_headers hands the app its own cookies without rs-auth's.
+(rs_auth) {
+	request_header -Remote_*
+	forward_auth rs-auth:9091 {
+		uri /api/verify
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name Cookie
+		transport http {
+			max_conns_per_host 64
+		}
+	}
+}
+
+# The portal itself. /api/verify is only for Caddy's own internal calls.
 auth.example.com {
-	reverse_proxy rs-auth:9091
+	@verify path /api/verify /api/verify/*
+	respond @verify 404
+	reverse_proxy rs-auth:9091 {
+		transport http {
+			max_conns_per_host 64
+		}
+	}
 }
 
 whoami.example.com {
-	forward_auth rs-auth:9091 {
-		uri /api/verify
-		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
-	}
+	import rs_auth
 	reverse_proxy whoami:80
 }

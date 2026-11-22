@@ -12,13 +12,17 @@ use crate::token::{self, Claims, Hs256Signer, TokenError, TokenSigner};
 pub type SharedState = Arc<AppState>;
 
 pub const MAX_CONCURRENT_HASHES: usize = 4;
+pub const MAX_QUEUED_LOGINS: usize = 16;
+pub const USER_BUCKETS: u64 = 4096;
 
 pub struct AppState {
     pub config: Config,
     pub signer: Box<dyn TokenSigner>,
     pub limiter: RateLimiter,
+    pub user_limiter: Option<RateLimiter<u64>>,
     pub dummy_hash: String,
     pub hash_permits: Arc<Semaphore>,
+    pub login_slots: Arc<Semaphore>,
     pub revocations: Arc<Revocations>,
 }
 
@@ -38,8 +42,16 @@ impl AppState {
             config.session.revocation_file.as_deref(),
             token::now(),
         )?);
+        revocations.persist()?;
         let signer = Box::new(Hs256Signer::new(&config.session.secret, &config.issuer()));
         let limiter = RateLimiter::new(config.login.max_attempts, config.login.window);
+        let user_limiter = (config.login.max_attempts_per_user > 0).then(|| {
+            RateLimiter::with_capacity(
+                config.login.max_attempts_per_user,
+                config.login.window,
+                usize::try_from(USER_BUCKETS).unwrap_or(usize::MAX) + 1,
+            )
+        });
         let permits = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(2)
@@ -48,6 +60,7 @@ impl AppState {
             revocations,
             signer,
             limiter,
+            user_limiter,
             dummy_hash: password::dummy_hash(
                 config
                     .users
@@ -56,6 +69,7 @@ impl AppState {
                     .map(|u| u.password_hash.as_str()),
             ),
             hash_permits: Arc::new(Semaphore::new(permits)),
+            login_slots: Arc::new(Semaphore::new(permits + MAX_QUEUED_LOGINS)),
             config,
         }))
     }
@@ -68,7 +82,21 @@ impl AppState {
         claims.exp + token::LEEWAY_SECS
     }
 
-    pub fn session_user(&self, jar: &CookieJar) -> Option<SessionUser<'_>> {
+    pub fn user_bucket(&self, username: &str) -> u64 {
+        use hmac::{KeyInit, Mac};
+        let Ok(mut m) = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.config.session.secret)
+        else {
+            return 0;
+        };
+        m.update(b"rs-auth login user\0");
+        m.update(username.as_bytes());
+        let d = m.finalize().into_bytes();
+        let mut first = [0u8; 8];
+        first.copy_from_slice(d.get(..8).unwrap_or(&[0; 8]));
+        u64::from_be_bytes(first) % USER_BUCKETS
+    }
+
+    pub fn signed_claims(&self, jar: &CookieJar) -> Option<Claims> {
         let token = jar.get(&self.config.session.cookie_name)?;
         if token.is_empty() {
             return None;
@@ -88,6 +116,17 @@ impl AppState {
             tracing::debug!(user = %claims.sub, "session from an old session.version");
             return None;
         }
+        Some(claims)
+    }
+
+    pub fn unsaved_sign_out(&self, jar: &CookieJar) -> Option<Claims> {
+        let claims = self.signed_claims(jar)?;
+        (self.revocations.is_revoked(&claims.jti, claims.iat) && !self.revocations.is_saved())
+            .then_some(claims)
+    }
+
+    pub fn session_user(&self, jar: &CookieJar) -> Option<SessionUser<'_>> {
+        let claims = self.signed_claims(jar)?;
         let (username, user) = self.config.users.get_key_value(&claims.sub)?;
         if !bool::from(subtle::ConstantTimeEq::ct_eq(
             claims.pwh.as_bytes(),

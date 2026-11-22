@@ -61,13 +61,10 @@ jobs:
       - name: Build the rs-auth image
         run: $COMPOSE build
       - name: Run end-to-end checks through ${{ matrix.proxy }}
-        run: $COMPOSE up --abort-on-container-exit --exit-code-from tester
-      - name: Show container logs
-        if: failure()
-        run: $COMPOSE logs --no-color
+        run: sh e2e/run.sh ${{ matrix.proxy }}
       - name: Clean up
         if: always()
-        run: $COMPOSE down -v
+        run: $COMPOSE --profile phases down -v
 
   audit:
     runs-on: ubuntu-latest
@@ -97,6 +94,8 @@ jobs:
           test "$(docker inspect rs-auth:ci --format '{{.Config.User}}')" = "65532"
           ! docker run --rm --entrypoint /bin/sh rs-auth:ci -c true
           docker run --rm rs-auth:ci --version
+      # Trivy inventories the base image only; the static binary carries no
+      # package metadata, so the Rust crates are checked by the audit and deny jobs.
       - name: Scan with Trivy
         run: |
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \

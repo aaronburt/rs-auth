@@ -1,10 +1,14 @@
 #!/bin/sh
 set -u
 
+MODE=${1:-main}
 AUTH=https://auth.example.test
 APP=https://whoami.example.test
 OTHER=https://other.example.test
 DIRECT=http://rs-auth:9091
+CHANGED_SITE=https://changed.example.test
+BACKEND=http://whoami:80
+STATE=/state
 TMP=$(mktemp -d)
 PASS=0
 FAIL=0
@@ -45,12 +49,63 @@ sign_in() {
     --data-urlencode "csrf=$t" --data-urlencode "rd=$4"
 }
 
+code() {
+  curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "$@"
+}
+finish() {
+  echo
+  echo "$PASS passed, $FAIL failed"
+  [ "$FAIL" -eq 0 ]
+  exit
+}
+wait_ready() {
+  i=0
+  until [ "$(code $AUTH/healthz)" = 200 ]; do
+    i=$((i + 1)); [ $i -gt 30 ] && { echo "The proxy never became ready"; exit 1; }
+    sleep 1
+  done
+}
+
+if [ "$MODE" = outside ]; then
+  echo "From a host that is only on the proxy's public network"
+  check "rs-auth cannot be reached directly" "$(code $DIRECT/healthz)" 000
+  check "the app cannot be reached directly" "$(code $BACKEND/)" 000
+  check "the app is reached through the proxy (302 to sign in)" "$(code $APP/)" 302
+  check "the portal is reached through the proxy" "$(code $AUTH/login)" 200
+  check "the portal does not serve /api/verify" "$(code $AUTH/api/verify)" 404
+  finish
+fi
+
+if [ "$MODE" = restart ]; then
+  echo "After rs-auth restarted"
+  wait_ready
+  s=$(req rsrevoked - -H "Cookie: rs_auth_session=$(cat $STATE/revoked)" "$APP/")
+  check "a cookie signed out before the restart is still refused" "$s" 302
+  s=$(req rslive - -H "Cookie: rs_auth_session=$(cat $STATE/live)" "$APP/")
+  check "a session that was not signed out still works" "$s" 200
+  finish
+fi
+
+if [ "$MODE" = outage ]; then
+  echo "rs-auth is stopped and the app is healthy"
+  check "the app answers when called directly" "$(code $BACKEND/)" 200
+  check "rs-auth is down" "$(code $DIRECT/healthz)" 000
+  for site in "$APP" "$OTHER" "$CHANGED_SITE"; do
+    s=$(req outlive - -H "Cookie: rs_auth_session=$(cat $STATE/live)" "$site/")
+    [ "$s" -ge 500 ] && ok "$site with a valid session is refused ($s)" || bad "$site with a valid session is refused" "got $s"
+    lacks "and the app content is not served" "$TMP/outlive.body" "Hostname:"
+    s=$(req outanon - "$site/")
+    [ "$s" -ge 500 ] && ok "$site without a session is refused ($s)" || bad "$site without a session is refused" "got $s"
+    lacks "and the app content is not served" "$TMP/outanon.body" "Hostname:"
+    s=$(req outforged - -H "Remote-User: aaron" -H "Remote-Groups: admins" "$site/")
+    [ "$s" -ge 500 ] && ok "$site with forged Remote-* headers is refused ($s)" || bad "$site with forged Remote-* headers is refused" "got $s"
+    lacks "and the app content is not served" "$TMP/outforged.body" "Hostname:"
+  done
+  finish
+fi
+
 echo "Waiting for the proxy..."
-i=0
-until [ "$(curl -sk -o /dev/null -w '%{http_code}' $AUTH/healthz)" = 200 ]; do
-  i=$((i + 1)); [ $i -gt 30 ] && { echo "The proxy never became ready"; exit 1; }
-  sleep 1
-done
+wait_ready
 
 echo
 echo "1. Not signed in"
@@ -128,7 +183,7 @@ contains "app sees guest" "$TMP/guestapp.body" "Remote-User: guest"
 lacks "forged Remote-Email is not passed through" "$TMP/guestapp.body" "boss@example.test"
 
 echo
-echo "7. Direct calls that skip Traefik"
+echo "7. Direct calls that skip the proxy"
 sess=$(grep rs_auth_session "$TMP/jar_aaron" | awk '{print $7}')
 s=$(req direct - -H "Cookie: rs_auth_session=$sess" -H "X-Forwarded-Proto: https" \
   -H "X-Forwarded-Host: whoami.example.test" -H "X-Forwarded-Uri: /" "$DIRECT/api/verify")
@@ -198,15 +253,14 @@ check "a planted cookie without the __Host- prefix is refused (403)" "$s" 403
 
 echo
 echo "10. Config edited and rs-auth restarted"
-CHANGED=https://changed.example.test
 s=$(sign_in jar_carol carol carol-test-pass "")
 check "carol signs in" "$s" 303
-s=$(req chcarol jar_carol "$CHANGED/")
+s=$(req chcarol jar_carol "$CHANGED_SITE/")
 check "an unchanged user keeps their session after the restart" "$s" 200
 contains "and is still carol" "$TMP/chcarol.body" "Remote-User: carol"
-s=$(req chaaron jar_aaron "$CHANGED/")
+s=$(req chaaron jar_aaron "$CHANGED_SITE/")
 check "a password change ends the old session" "$s" 302
-s=$(req chguest jar_guest "$CHANGED/")
+s=$(req chguest jar_guest "$CHANGED_SITE/")
 check "removing a user ends their session" "$s" 302
 s=$(req stillok jar_aaron "$APP/")
 check "the same cookie still works where the password did not change" "$s" 200
@@ -227,9 +281,50 @@ s=$(req afterlogout jar_aaron "$APP/")
 check "app redirects to login again" "$s" 302
 s=$(req reuse - -H "Cookie: rs_auth_session=$sess" "$APP/")
 check "a copied cookie stops working after sign-out (revoked)" "$s" 302
+mkdir -p "$STATE"
+printf '%s' "$sess" > "$STATE/revoked"
+grep rs_auth_session "$TMP/jar_carol" | awk '{print $7}' | tr -d '\n' > "$STATE/live"
 
 echo
-echo "12. Rate limit (run last: it locks out this container's IP)"
+echo "12. The portal does not expose /api/verify"
+live=$(cat "$STATE/live")
+for path in /api/verify "/api/verify?x=1" /api/verify/ /API/verify //api/verify /api//verify /api/./verify /api/%76erify /api%2Fverify /x/../api/verify; do
+  s=$(req pubverify - -H "Cookie: rs_auth_session=$live" -H "X-Forwarded-Host: whoami.example.test" "$AUTH$path")
+  case "$s" in 200|302|303|401) bad "public $path is refused" "got $s" ;; *) ok "public $path is refused ($s)" ;; esac
+  lacks "and $path leaks no user headers" "$TMP/pubverify.head" "remote-user"
+done
+s=$(req pubhead - -I -H "Cookie: rs_auth_session=$live" "$AUTH/api/verify")
+check "HEAD /api/verify on the portal is refused" "$s" 404
+s=$(req stillworks - -H "Cookie: rs_auth_session=$live" "$APP/")
+check "forward-auth through the proxy still works" "$s" 200
+
+echo
+echo "13. The session cookie stays out of the app"
+s=$(req cookies - -H "Cookie: app_pref=keep; rs_auth_session=$live; app_other=2" "$APP/")
+check "signed in with app cookies (200)" "$s" 200
+contains "the app gets its own cookies" "$TMP/cookies.body" "Cookie: app_pref=keep; app_other=2"
+lacks "the app never sees the session cookie" "$TMP/cookies.body" "rs_auth_session"
+lacks "or the token" "$TMP/cookies.body" "$live"
+s=$(req onlysession - -H "Cookie: rs_auth_session=$live" "$APP/")
+check "signed in with only the session cookie (200)" "$s" 200
+lacks "the app gets no Cookie header at all" "$TMP/onlysession.body" "Cookie:"
+s=$(req forgedcookie - -H "Cookie: rs_auth_session=$live" -H "Cookie: app_pref=x" "$APP/")
+check "two Cookie headers are handled (200)" "$s" 200
+lacks "and the session cookie is still removed" "$TMP/forgedcookie.body" "rs_auth_session"
+s=$(req dup - -H "Cookie: rs_auth_session=$live; rs_auth_session=planted.by.a.sibling" "$APP/")
+check "two different session cookies are refused (400)" "$s" 400
+lacks "and the app content is not served" "$TMP/dup.body" "Hostname:"
+s=$(req dupsame - -H "Cookie: rs_auth_session=$live; rs_auth_session=$live" "$APP/")
+check "the same session cookie twice is fine (200)" "$s" 200
+s=$(req alias - -H "Cookie: rs_auth_session=$live" -H "Remote_User: aaron" -H "Remote_Groups: admins" "$APP/")
+check "signed in as carol with underscore Remote_* headers (200)" "$s" 200
+contains "the app sees carol" "$TMP/alias.body" "Remote-User: carol"
+lacks "Remote_User does not reach the app" "$TMP/alias.body" "Remote_User"
+lacks "Remote_Groups does not reach the app" "$TMP/alias.body" "Remote_Groups"
+lacks "the forged admins group does not reach the app" "$TMP/alias.body" "admins"
+
+echo
+echo "14. Rate limit (run last: it locks out this container's IP)"
 touch "$TMP/jar_rl"
 req rlpage jar_rl "$AUTH/login" >/dev/null
 t=$(csrf_of rlpage)
@@ -246,6 +341,4 @@ contains "shows the locked-out message" "$TMP/rl.body" "Too many sign-in attempt
 lacks "sends no Retry-After" "$TMP/rl.head" "retry-after"
 lacks "sets no session cookie" "$TMP/rl.head" "rs_auth_session="
 
-echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+finish

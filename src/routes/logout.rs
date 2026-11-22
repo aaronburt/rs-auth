@@ -26,19 +26,22 @@ fn confirm_page(
     jar: CookieJar,
     status: StatusCode,
     stay: String,
-    expired: bool,
+    notice: ui::LogoutNotice,
 ) -> Response {
-    let Some(s) = state.session_user(&jar) else {
-        return Redirect::to("/login").into_response();
+    let username = match state.session_user(&jar) {
+        Some(s) => s.username.to_owned(),
+        None => match state.unsaved_sign_out(&jar) {
+            Some(c) => c.sub,
+            None => return Redirect::to("/login").into_response(),
+        },
     };
-    let username = s.username.to_owned();
     let (jar, token) = csrf::issue(jar, !state.config.server.insecure_dev_mode);
     let p = ui::LogoutPage {
         css: ui::CSS,
         username,
         csrf: token,
         stay_url: stay,
-        expired,
+        notice,
     };
     (jar, render(status, &p)).into_response()
 }
@@ -49,7 +52,7 @@ pub async fn show(
     jar: CookieJar,
 ) -> Response {
     let stay = rd::target(&state.config, q.rd.as_deref()).to_string();
-    confirm_page(&state, jar, StatusCode::OK, stay, false)
+    confirm_page(&state, jar, StatusCode::OK, stay, ui::LogoutNotice::None)
 }
 
 pub async fn submit(
@@ -60,16 +63,32 @@ pub async fn submit(
     let secure = !state.config.server.insecure_dev_mode;
     if !csrf::check(&jar, &form.csrf, secure) {
         let stay = state.config.server.default_redirect_url.to_string();
-        return confirm_page(&state, jar, StatusCode::FORBIDDEN, stay, true);
+        return confirm_page(
+            &state,
+            jar,
+            StatusCode::FORBIDDEN,
+            stay,
+            ui::LogoutNotice::Expired,
+        );
     }
-    if let Some(s) = state.session_user(&jar) {
-        tracing::info!(user = %s.username, "signed out");
-        let until = state.session_until(&s.claims);
-        let jti = s.claims.jti.clone();
-        state
+    if let Some(claims) = state.signed_claims(&jar) {
+        let until = state.session_until(&claims);
+        if let Err(e) = state
             .revocations
-            .revoke(&jti, s.claims.iat, until, crate::token::now())
-            .await;
+            .revoke(&claims.jti, claims.iat, until, crate::token::now())
+            .await
+        {
+            tracing::error!(user = %claims.sub, error = %e, "sign-out could not be saved");
+            let stay = state.config.server.default_redirect_url.to_string();
+            return confirm_page(
+                &state,
+                jar,
+                StatusCode::SERVICE_UNAVAILABLE,
+                stay,
+                ui::LogoutNotice::NotSaved,
+            );
+        }
+        tracing::info!(user = %claims.sub, "signed out");
     }
     let jar = csrf::clear(jar, secure).with(cookie::clear_session(&state.config));
     (jar, redirect(StatusCode::SEE_OTHER, "/login")).into_response()

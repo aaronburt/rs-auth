@@ -86,10 +86,37 @@ impl Cookie {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Seen {
+    name: String,
+    value: String,
+    ambiguous: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct CookieJar {
-    seen: Vec<(String, String)>,
+    seen: Vec<Seen>,
     added: Vec<Cookie>,
+}
+
+fn pairs<'a>(values: impl Iterator<Item = &'a str>) -> impl Iterator<Item = (&'a str, &'a str)> {
+    values
+        .flat_map(|header| header.split(';'))
+        .filter_map(|pair| {
+            let (name, value) = pair.trim().split_once('=')?;
+            let (name, value) = (name.trim(), value.trim());
+            (!name.is_empty()).then_some((name, value))
+        })
+}
+
+pub fn without<'a>(values: impl Iterator<Item = &'a str>, name: &str) -> Option<String> {
+    let kept: Vec<&str> = values
+        .flat_map(|header| header.split(';'))
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+        .filter(|pair| pair.split_once('=').map_or(*pair, |(n, _)| n).trim() != name)
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("; "))
 }
 
 impl CookieJar {
@@ -98,20 +125,15 @@ impl CookieJar {
     }
 
     pub fn parse<'a>(values: impl Iterator<Item = &'a str>) -> Self {
-        let mut seen: Vec<(String, String)> = Vec::new();
-        for header in values {
-            for pair in header.split(';') {
-                let Some((name, value)) = pair.trim().split_once('=') else {
-                    continue;
-                };
-                let (name, value) = (name.trim(), value.trim());
-                if name.is_empty() {
-                    continue;
-                }
-                match seen.iter_mut().find(|(n, _)| n == name) {
-                    Some(slot) => slot.1 = value.to_owned(),
-                    None => seen.push((name.to_owned(), value.to_owned())),
-                }
+        let mut seen: Vec<Seen> = Vec::new();
+        for (name, value) in pairs(values) {
+            match seen.iter_mut().find(|s| s.name == name) {
+                Some(slot) => slot.ambiguous |= slot.value != value,
+                None => seen.push(Seen {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                    ambiguous: false,
+                }),
             }
         }
         Self {
@@ -126,8 +148,12 @@ impl CookieJar {
         }
         self.seen
             .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
+            .find(|s| s.name == name && !s.ambiguous)
+            .map(|s| s.value.as_str())
+    }
+
+    pub fn is_ambiguous(&self, name: &str) -> bool {
+        self.seen.iter().any(|s| s.name == name && s.ambiguous)
     }
 
     pub fn with(mut self, cookie: Cookie) -> Self {
@@ -218,9 +244,49 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_name_keeps_the_last_value() {
-        let j = jar(&["a=1; a=2"]);
-        assert_eq!(j.get("a"), Some("2"));
+    fn a_repeated_name_with_different_values_is_ambiguous() {
+        let j = jar(&["a=1; b=3", "a=2"]);
+        assert_eq!(j.get("a"), None);
+        assert!(j.is_ambiguous("a"));
+        assert_eq!(j.get("b"), Some("3"));
+        assert!(!j.is_ambiguous("b"));
+        assert!(!j.is_ambiguous("missing"));
+    }
+
+    #[test]
+    fn a_repeated_name_with_the_same_value_is_not_ambiguous() {
+        let j = jar(&["a=1; a=1"]);
+        assert_eq!(j.get("a"), Some("1"));
+        assert!(!j.is_ambiguous("a"));
+    }
+
+    #[test]
+    fn without_drops_only_the_named_cookie() {
+        let h = [
+            "theme=dark; rs_auth_session=abc.def; app_session=xyz",
+            "rs_auth_session=zzz; lang=en",
+        ];
+        assert_eq!(
+            without(h.iter().copied(), "rs_auth_session").as_deref(),
+            Some("theme=dark; app_session=xyz; lang=en")
+        );
+        assert_eq!(
+            without(["rs_auth_session=abc"].into_iter(), "rs_auth_session"),
+            None
+        );
+        assert_eq!(without(["; ;"].into_iter(), "x"), None);
+        assert_eq!(
+            without(
+                ["rs_auth_session_extra=1; xrs_auth_session=2; flag"].into_iter(),
+                "rs_auth_session"
+            )
+            .as_deref(),
+            Some("rs_auth_session_extra=1; xrs_auth_session=2; flag")
+        );
+        assert_eq!(
+            without([" rs_auth_session =1; a=2"].into_iter(), "rs_auth_session").as_deref(),
+            Some("a=2")
+        );
     }
 
     #[test]

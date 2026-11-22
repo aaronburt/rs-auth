@@ -1,10 +1,11 @@
-# End-to-end test of rs-auth behind Caddy 2.
+# End-to-end test of rs-auth behind Caddy 2, serving https from its internal
+# CA. Run it with e2e/run.sh caddy.
 #
-#   docker compose -f e2e/caddy/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tester
-#   docker compose -f e2e/caddy/docker-compose.yml down
-#
-# Caddy serves https from its internal CA. The tester
-# container runs e2e/test.sh against it and exits 0 if every check passes.
+# Networks match examples/caddy: only Caddy is on "edge"; rs-auth sits on
+# the internal "auth" network and the app on the internal "apps" network, and
+# rs-auth trusts only Caddy's fixed address on "auth". The tester joins all
+# three so it can also check what an untrusted neighbour can and cannot do;
+# the outsider joins only "edge".
 name: rs-auth-e2e-caddy
 
 networks:
@@ -12,16 +13,34 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+  auth:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+  apps:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
+
+volumes:
+  rs_auth_data:
+  state:
 
 services:
   caddy:
-    image: caddy:2.8
+    image: caddy:2.11.9
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       edge:
         ipv4_address: 172.30.0.10
         aliases: [auth.example.test, whoami.example.test, other.example.test, changed.example.test]
+      auth:
+        ipv4_address: 172.30.1.10
+      apps:
+        ipv4_address: 172.30.2.10
 
   rs-auth:
     build: ../..
@@ -30,14 +49,14 @@ services:
       RUST_LOG: info
     volumes:
       - ../config.toml:/config/config.toml:ro
+      - rs_auth_data:/data
     healthcheck:
       test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
       interval: 2s
       timeout: 3s
       retries: 30
-    networks: [edge]
+    networks: [auth]
 
-  # Stands in for rs-auth restarted after an admin edited the config.
   rs-auth-changed:
     build: ../..
     environment:
@@ -50,17 +69,19 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
-    networks: [edge]
+    networks: [auth]
 
   whoami:
     image: traefik/whoami:v1.10
-    networks: [edge]
+    networks: [apps]
 
   tester:
     image: curlimages/curl:8.11.1
+    user: "0"
     entrypoint: ["/bin/sh", "/test.sh"]
     volumes:
       - ../test.sh:/test.sh:ro
+      - state:/state
     depends_on:
       rs-auth:
         condition: service_healthy
@@ -70,4 +91,12 @@ services:
         condition: service_started
       whoami:
         condition: service_started
+    networks: [edge, auth, apps]
+
+  outsider:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["/bin/sh", "/test.sh", "outside"]
+    volumes:
+      - ../test.sh:/test.sh:ro
+    profiles: [phases]
     networks: [edge]

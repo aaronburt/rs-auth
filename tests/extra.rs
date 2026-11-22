@@ -23,7 +23,9 @@ fn state_with(
             config.login.max_attempts,
             config.login.window,
         ),
+        user_limiter: None,
         hash_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(4)),
         revocations: Arc::new(revocations),
         signer,
         config,
@@ -208,7 +210,8 @@ async fn overflowing_the_revocation_list_ends_older_sessions_but_not_new_ones() 
         state
             .revocations
             .revoke(&format!("{n:032x}"), now - age, now + 3600, now)
-            .await;
+            .await
+            .unwrap();
     }
     assert_eq!(state.revocations.floor(), now - 5_000);
     assert_eq!(

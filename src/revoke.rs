@@ -15,6 +15,8 @@ struct Entry {
 struct Inner {
     entries: HashMap<String, Entry>,
     floor: u64,
+    changes: u64,
+    saved: u64,
 }
 
 impl Inner {
@@ -121,43 +123,60 @@ impl Revocations {
         self.len() == 0
     }
 
-    pub async fn revoke(self: &Arc<Self>, jti: &str, iat: u64, until: u64, now: u64) {
+    pub fn is_saved(&self) -> bool {
+        let inner = self.lock();
+        self.path.is_none() || inner.saved == inner.changes
+    }
+
+    pub async fn revoke(
+        self: &Arc<Self>,
+        jti: &str,
+        iat: u64,
+        until: u64,
+        now: u64,
+    ) -> std::io::Result<()> {
         if !well_formed(jti) {
-            return;
+            return Ok(());
         }
         {
             let mut inner = self.lock();
             inner.entries.retain(|_, e| e.until > now);
-            if iat <= inner.floor {
-                return;
+            if iat > inner.floor && !inner.entries.contains_key(jti) {
+                if inner.entries.len() >= self.max_entries {
+                    let dropped = inner.make_room(self.max_entries);
+                    tracing::warn!(
+                        dropped,
+                        floor = inner.floor,
+                        "revocation list is full; every session started at or before the floor is now refused"
+                    );
+                }
+                inner.entries.insert(jti.to_owned(), Entry { until, iat });
+                inner.changes += 1;
             }
-            if inner.entries.len() >= self.max_entries {
-                let dropped = inner.make_room(self.max_entries);
-                tracing::warn!(
-                    dropped,
-                    floor = inner.floor,
-                    "revocation list is full; every session started at or before the floor is now refused"
-                );
-            }
-            inner.entries.insert(jti.to_owned(), Entry { until, iat });
         }
-        if self.path.is_none() {
-            return;
-        }
-        let me = Arc::clone(self);
-        match tokio::task::spawn_blocking(move || me.persist()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::error!(error = %e, "could not save the revocation list"),
-            Err(e) => tracing::error!(error = %e, "could not save the revocation list"),
-        }
+        self.save().await
     }
 
-    fn persist(&self) -> std::io::Result<()> {
+    pub async fn save(self: &Arc<Self>) -> std::io::Result<()> {
+        if self.is_saved() {
+            return Ok(());
+        }
+        let me = Arc::clone(self);
+        let result = tokio::task::spawn_blocking(move || me.persist())
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+        if let Err(e) = &result {
+            tracing::error!(error = %e, "could not save the revocation list");
+        }
+        result
+    }
+
+    pub fn persist(&self) -> std::io::Result<()> {
         let Some(path) = &self.path else {
             return Ok(());
         };
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let body: String = {
+        let (body, changes) = {
             let inner = self.lock();
             let mut b = String::new();
             if inner.floor > 0 {
@@ -166,7 +185,7 @@ impl Revocations {
             for (k, e) in &inner.entries {
                 b.push_str(&format!("{k} {} {}\n", e.until, e.iat));
             }
-            b
+            (b, inner.changes)
         };
         let tmp = path.with_extension("tmp");
         {
@@ -174,7 +193,13 @@ impl Revocations {
             f.write_all(body.as_bytes())?;
             f.sync_all()?;
         }
-        std::fs::rename(&tmp, path)
+        std::fs::rename(&tmp, path)?;
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::File::open(dir).and_then(|d| d.sync_all()).ok();
+        }
+        let mut inner = self.lock();
+        inner.saved = inner.saved.max(changes);
+        Ok(())
     }
 }
 
@@ -199,8 +224,8 @@ mod tests {
         let path = dir.join("revoked");
         let r = Arc::new(Revocations::load(Some(&path), 100).unwrap());
         assert!(r.is_empty());
-        r.revoke("abcd", 50, 500, 100).await;
-        r.revoke("not hex!", 50, 500, 100).await;
+        r.revoke("abcd", 50, 500, 100).await.unwrap();
+        r.revoke("not hex!", 50, 500, 100).await.unwrap();
         assert!(r.is_revoked("abcd", 9999));
         assert!(!r.is_revoked("beef", 9999));
         assert_eq!(r.len(), 1);
@@ -215,8 +240,8 @@ mod tests {
     #[tokio::test]
     async fn expired_entries_are_pruned_on_write() {
         let r = Arc::new(Revocations::in_memory());
-        r.revoke("aa", 10, 150, 100).await;
-        r.revoke("bb", 10, 900, 200).await;
+        r.revoke("aa", 10, 150, 100).await.unwrap();
+        r.revoke("bb", 10, 900, 200).await.unwrap();
         assert!(!r.is_revoked("aa", 9999));
         assert!(r.is_revoked("bb", 9999));
     }
@@ -225,12 +250,14 @@ mod tests {
     async fn a_full_list_raises_the_floor_instead_of_forgetting_sessions() {
         let r = Arc::new(Revocations::load_with_capacity(None, 0, 3).unwrap());
         for n in 1..=3u32 {
-            r.revoke(&jti(n), u64::from(n) * 10, 10_000, 1).await;
+            r.revoke(&jti(n), u64::from(n) * 10, 10_000, 1)
+                .await
+                .unwrap();
         }
         assert_eq!(r.len(), 3);
         assert_eq!(r.floor(), 0);
 
-        r.revoke(&jti(4), 40, 10_000, 1).await;
+        r.revoke(&jti(4), 40, 10_000, 1).await.unwrap();
         assert_eq!(
             r.floor(),
             10,
@@ -257,10 +284,10 @@ mod tests {
     #[tokio::test]
     async fn sessions_older_than_the_floor_are_not_stored_again() {
         let r = Arc::new(Revocations::load_with_capacity(None, 0, 1).unwrap());
-        r.revoke(&jti(1), 100, 10_000, 1).await;
-        r.revoke(&jti(2), 200, 10_000, 1).await;
+        r.revoke(&jti(1), 100, 10_000, 1).await.unwrap();
+        r.revoke(&jti(2), 200, 10_000, 1).await.unwrap();
         assert_eq!(r.floor(), 100);
-        r.revoke(&jti(3), 50, 10_000, 1).await;
+        r.revoke(&jti(3), 50, 10_000, 1).await.unwrap();
         assert!(r.is_revoked(&jti(3), 50));
         assert_eq!(r.len(), 1);
     }
@@ -269,7 +296,7 @@ mod tests {
     async fn identical_start_times_are_all_covered() {
         let r = Arc::new(Revocations::load_with_capacity(None, 0, 2).unwrap());
         for n in 1..=5u32 {
-            r.revoke(&jti(n), 70, 10_000, 1).await;
+            r.revoke(&jti(n), 70, 10_000, 1).await.unwrap();
         }
         for n in 1..=5u32 {
             assert!(r.is_revoked(&jti(n), 70));
@@ -283,7 +310,9 @@ mod tests {
         let path = dir.join("revoked");
         let r = Arc::new(Revocations::load_with_capacity(Some(&path), 0, 2).unwrap());
         for n in 1..=3u32 {
-            r.revoke(&jti(n), u64::from(n) * 10, 10_000, 1).await;
+            r.revoke(&jti(n), u64::from(n) * 10, 10_000, 1)
+                .await
+                .unwrap();
         }
         let floor = r.floor();
         assert!(floor > 0);
@@ -350,13 +379,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_save_failure_keeps_the_revocation_in_memory() {
+    async fn a_save_failure_is_reported_kept_in_memory_and_retried() {
         let dir = tmp("nosave");
-        let path = dir.join("missing-dir").join("revoked");
+        let sub = dir.join("missing-dir");
+        let path = sub.join("revoked");
         let r = Arc::new(Revocations::load(Some(&path), 0).unwrap());
-        r.revoke(&jti(1), 10, 500, 1).await;
+        assert!(r.is_saved());
+        assert!(r.revoke(&jti(1), 10, 500, 1).await.is_err());
         assert!(r.is_revoked(&jti(1), 10));
+        assert!(!r.is_saved());
         assert!(!path.exists());
+        assert!(
+            r.revoke(&jti(1), 10, 500, 1).await.is_err(),
+            "a repeat must not report success while the list is unsaved"
+        );
+        assert!(r.save().await.is_err());
+
+        std::fs::create_dir_all(&sub).unwrap();
+        r.revoke(&jti(1), 10, 500, 1).await.unwrap();
+        assert!(r.is_saved());
+        let again = Revocations::load(Some(&path), 1).unwrap();
+        assert!(
+            again.is_revoked(&jti(1), 10),
+            "survives a restart after the retry"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unsaved_floor_is_saved_by_the_next_revoke() {
+        let dir = tmp("floorretry");
+        let sub = dir.join("later");
+        let path = sub.join("revoked");
+        let r = Arc::new(Revocations::load_with_capacity(Some(&path), 0, 1).unwrap());
+        assert!(r.revoke(&jti(1), 10, 10_000, 1).await.is_err());
+        assert!(r.revoke(&jti(2), 20, 10_000, 1).await.is_err());
+        assert_eq!(r.floor(), 10);
+        std::fs::create_dir_all(&sub).unwrap();
+        r.revoke(&jti(3), 5, 10_000, 1).await.unwrap();
+        let again = Revocations::load_with_capacity(Some(&path), 0, 1).unwrap();
+        assert_eq!(again.floor(), 10);
+        assert!(again.is_revoked(&jti(1), 10));
+        assert!(again.is_revoked(&jti(2), 20));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_memory_lists_are_always_saved() {
+        let r = Arc::new(Revocations::in_memory());
+        r.revoke(&jti(1), 10, 500, 1).await.unwrap();
+        r.revoke("not hex", 10, 500, 1).await.unwrap();
+        assert!(r.is_saved());
+        r.persist().unwrap();
     }
 }

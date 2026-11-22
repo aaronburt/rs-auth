@@ -1,12 +1,13 @@
 [server]
 address = "0.0.0.0:9091"
 portal_url = "https://auth.rs-auth.localhost:8443"
-trusted_proxies = ["172.29.0.10/32"]
+trusted_proxies = ["172.29.1.10/32"]
 default_redirect_url = "https://whoami.rs-auth.localhost:8443/"
 
 [session]
 domain = "rs-auth.localhost"
 expiry = "1h"
+revocation_file = "/data/revoked.txt"
 
 [login]
 max_attempts = 5

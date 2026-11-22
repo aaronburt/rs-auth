@@ -10,15 +10,27 @@ name: rs-auth-demo
 
 networks:
   edge:
+  auth:
+    internal: true
     ipam:
       config:
-        - subnet: 172.29.0.0/24
+        - subnet: 172.29.1.0/24
+  apps:
+    internal: true
+
+volumes:
+  rs_auth_data:
 
 services:
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.7.19
     command:
       - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http.aliasHeadersStrategy=delete
+      - --entrypoints.websecure.http.maxHeaderBytes=32768
+      - --entrypoints.websecure.http.middlewares=client-limit@file
+      - --entrypoints.websecure.transport.respondingTimeouts.readTimeout=10s
+      - --entrypoints.websecure.transport.respondingTimeouts.idleTimeout=60s
       - --providers.file.filename=/etc/traefik/dynamic.yml
       - --log.level=WARN
     volumes:
@@ -27,7 +39,9 @@ services:
       - "127.0.0.1:8443:443"
     networks:
       edge:
-        ipv4_address: 172.29.0.10
+      auth:
+        ipv4_address: 172.29.1.10
+      apps:
 
   rs-auth:
     build: ../..
@@ -36,8 +50,9 @@ services:
       RUST_LOG: info
     volumes:
       - ./config.toml:/config/config.toml:ro
-    networks: [edge]
+      - rs_auth_data:/data
+    networks: [auth]
 
   whoami:
     image: traefik/whoami:v1.10
-    networks: [edge]
+    networks: [apps]

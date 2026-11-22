@@ -2,18 +2,36 @@
 	local_certs
 	skip_install_trust
 	auto_https disable_redirects
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 60s
+		}
+		max_header_size 32KiB
+	}
 }
 
 (rs_auth) {
+	request_header -Remote_*
 	forward_auth rs-auth:9091 {
 		uri /api/verify
-		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name Cookie
+		transport http {
+			max_conns_per_host 64
+		}
 	}
 }
 
 auth.example.test {
 	tls internal
-	reverse_proxy rs-auth:9091
+	@verify path /api/verify /api/verify/*
+	respond @verify 404
+	reverse_proxy rs-auth:9091 {
+		transport http {
+			max_conns_per_host 64
+		}
+	}
 }
 
 whoami.example.test, other.example.test {
@@ -24,9 +42,10 @@ whoami.example.test, other.example.test {
 
 changed.example.test {
 	tls internal
+	request_header -Remote_*
 	forward_auth rs-auth-changed:9091 {
 		uri /api/verify
-		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+		copy_headers Remote-User Remote-Groups Remote-Email Remote-Name Cookie
 	}
 	reverse_proxy whoami:80
 }
