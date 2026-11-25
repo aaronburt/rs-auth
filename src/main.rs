@@ -28,6 +28,9 @@ fn main() -> ExitCode {
             if let Some(uri) = made.uri {
                 println!("{uri}");
             }
+            if let Some(qr) = made.qr {
+                println!("\n{qr}");
+            }
             Ok(())
         }
         Command::CheckConfig { config } => check_config(&config),

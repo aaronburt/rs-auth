@@ -356,9 +356,21 @@ fn totp_secret_command_makes_a_usable_secret() {
         totp::SECRET_BYTES
     );
     assert!(made.uri.is_none());
+    assert!(made.qr.is_none());
     let made = rs_auth::commands::new_totp_secret(Some("aaron"));
     let uri = made.uri.unwrap();
     assert!(uri.starts_with("otpauth://totp/rs-auth:aaron?secret="));
     assert!(uri.contains(&made.secret));
+    let qr = made.qr.unwrap();
+    assert!(qr.lines().count() > 10, "a QR code is many lines tall");
     assert_ne!(made.secret, rs_auth::commands::new_totp_secret(None).secret);
+}
+
+#[test]
+fn terminal_qr_is_rectangular_and_refuses_oversized_input() {
+    let qr = rs_auth::commands::terminal_qr("otpauth://totp/rs-auth:aaron?secret=ABC").unwrap();
+    let rows: Vec<&str> = qr.lines().collect();
+    let width = rows[0].chars().count();
+    assert!(rows.iter().all(|r| r.chars().count() == width));
+    assert!(rs_auth::commands::terminal_qr(&"x".repeat(10_000)).is_none());
 }

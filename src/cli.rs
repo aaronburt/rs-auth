@@ -7,7 +7,7 @@ rs-auth: a small forward-auth login portal for Traefik and Caddy
 Usage:
   rs-auth serve [-c, --config <file>]    Run the portal
   rs-auth hash-password [--stdin]        Print an Argon2id hash for a password
-  rs-auth totp-secret [username]         Print a new TOTP secret (and an otpauth:// link for the user)
+  rs-auth totp-secret [username]         Print a new TOTP secret (and, for a user, an otpauth:// link and QR code)
   rs-auth check-config [-c <file>]       Validate the config without starting
   rs-auth healthcheck [address]          Exit 0 if /healthz answers (default 127.0.0.1:9091)
   rs-auth --version | --help
