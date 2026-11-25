@@ -51,7 +51,7 @@ Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (defau
 | GET | `/api/verify` | The proxy, internally | Host with no `[access]` entry: `403` for everyone. Not signed in: `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Signed in but not in one of the host's groups: `403` with a "No access" page. Otherwise `200`, `Remote-*` headers, and a `Cookie` header holding the request's other cookies (see [Proxy setup](#proxy-setup)). Two session cookies with different values get `400`. Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. Never route it publicly. |
 | GET | `/api/verify/nginx` | nginx, internally | The same checks and the same answers as `/api/verify`, except that not signed in is a plain `401` with the login address in `Location`, because nginx's `auth_request` accepts only `2xx`, `401` and `403` (see [nginx](#nginx)). Never route it publicly. |
 | GET | `/login?rd=<url>` | Browser | The sign-in form. Already signed in: straight to `rd`. |
-| POST | `/login` | Form | Checks CSRF, the rate limits, the username, the code (if the user has one) and then the password, cheapest first. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. Too many sign-ins already waiting: `503` and an amber message. |
+| POST | `/login` | Form | Checks CSRF, the account lockout, the username, the code (if the user has one) and then the password, cheapest first. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. |
 | GET | `/logout` | Browser | A "Sign out?" page. Apps link here. |
 | POST | `/logout` | Form | Ends the session server-side and clears the cookie (CSRF-checked), then to `/login`. If `session.revocation_file` can't be written: `503`, the cookie is kept, and the page offers to try again. |
 | GET | `/logged-in` | Browser | Where a sign-in without `rd` lands. Change with `server.default_redirect_url`. |
@@ -108,9 +108,8 @@ bytes of base32.
 
 Sign-in checks run cheapest first: the username, then the code, then the
 Argon2 password hash. A sign-in that fails an earlier check never costs an
-Argon2 hash, and never takes a place in the queue for one. All failures show
-the same message ("Invalid username, password or code" once any user has a
-secret).
+Argon2 hash. All failures show the same message ("Invalid username, password
+or code" once any user has a secret).
 
 ### Access rules
 
@@ -292,16 +291,16 @@ What to know:
   answers faster than one after it. Someone timing responses can tell an
   unknown username, or a wrong code, from a wrong password. This is the price
   of never hashing for those requests.
-- Failed sign-ins are limited per client IP (`login.max_attempts` within
-  `login.window`, default 5 in 5 minutes) and per username from any IP
-  (`login.max_attempts_per_user`, default 20 in the same window; `0` turns it
-  off). The per-username count stops slow guessing spread over many addresses,
-  but anyone who knows a username can use it to keep that account locked out,
-  so pick the number with that in mind. Usernames are counted in 4,096 keyed
-  buckets, so unknown names lock out exactly like real ones and memory stays
-  bounded. The page never shows attempts left or how long a lockout lasts, and
-  no `Retry-After` is sent. A successful sign-in doesn't count against either
-  limit.
+- An account locks after `login.max_attempts` failed sign-ins within
+  `login.window` (default 5 in 5 minutes). While it is locked, even the right
+  password is refused. Attempts are counted before the password is checked, so
+  parallel guesses can't get past the limit, and a successful sign-in doesn't
+  count. Anyone who knows a username can use this to keep that account locked
+  out, so pick the number with that in mind. Usernames are counted in 4,096
+  keyed buckets, so unknown names lock out exactly like real ones and memory
+  stays bounded. The page never shows attempts left or how long a lockout
+  lasts, and no `Retry-After` is sent. There is no limit per client address:
+  rate limiting belongs to your proxy, firewall or Authelia.
 - The client IP comes from `X-Forwarded-For` only when the direct peer is a
   trusted proxy, reading right to left past trusted hops, so clients can't
   spoof it.
@@ -311,10 +310,8 @@ What to know:
 - Pages send a strict CSP (only the hashed inline style and script),
   `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and
   `Cache-Control: no-store`.
-- Argon2 runs on the blocking pool with at most 4 checks at once, and at most
-  16 more sign-ins may wait for one. Beyond that, sign-ins get `503` straight
-  away without using an attempt. Request bodies are capped at 16 KB and requests
-  time out after 15 seconds.
+- Argon2 runs on the blocking pool with at most 4 checks at once. Request
+  bodies are capped at 16 KB and requests time out after 15 seconds.
 - `#![forbid(unsafe_code)]`. Secrets and hashes never appear in logs.
 
 ## Development

@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use crate::cookie::CookieJar;
 use axum::extract::{ConnectInfo, Form, Query, State};
@@ -8,20 +7,13 @@ use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 
 use super::{redirect, render};
-use crate::config::User;
-use crate::ratelimit::Attempt;
+use crate::lockout::Attempt;
 use crate::state::SharedState;
 use crate::token::{self, Claims};
 use crate::ui::{self, LoginState};
 use crate::{cookie, csrf, net, password, redirect as rd};
 
 const MAX_USERNAME_LEN: usize = 64;
-
-enum Verdict<'a> {
-    Signed(&'a User),
-    Refused,
-    Busy,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct RdQuery {
@@ -70,8 +62,6 @@ fn page(
 
 pub async fn show(
     State(state): State<SharedState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Query(q): Query<RdQuery>,
     jar: CookieJar,
 ) -> Response {
@@ -79,17 +69,11 @@ pub async fn show(
         let to = rd::target(&state.config, q.rd.as_deref());
         return redirect(StatusCode::FOUND, to.as_str());
     }
-    let ip = net::client_ip(&state.config.server.trusted_proxies, peer, &headers);
-    let login_state = if state.limiter.is_locked(ip) {
-        LoginState::LockedOut
-    } else {
-        LoginState::Normal
-    };
     page(
         &state,
         jar,
         StatusCode::OK,
-        login_state,
+        LoginState::Normal,
         q.rd.as_deref(),
         String::new(),
     )
@@ -108,18 +92,6 @@ pub async fn submit(
     let rd = Some(form.rd.as_str()).filter(|r| !r.is_empty());
     let raw_username = form.username.trim();
     let shown: String = raw_username.chars().take(MAX_USERNAME_LEN).collect();
-
-    if state.limiter.is_locked(ip) {
-        tracing::warn!(%ip, user = %shown, "sign-in refused: rate limit");
-        return page(
-            &state,
-            jar,
-            StatusCode::TOO_MANY_REQUESTS,
-            LoginState::LockedOut,
-            rd,
-            String::new(),
-        );
-    }
 
     if !csrf::check(&jar, &form.csrf, secure) {
         tracing::info!(%ip, "sign-in form had a missing or stale CSRF token");
@@ -144,26 +116,10 @@ pub async fn submit(
         )
     };
 
-    let (at, mut locked_after) = match state.limiter.try_attempt(ip) {
+    let (at, locked_after) = match state.lockout.try_attempt(raw_username) {
         Attempt::Allowed { at, locked_after } => (at, locked_after),
         Attempt::Locked => {
-            tracing::warn!(%ip, user = %shown, "sign-in refused: rate limit");
-            return locked(&state, jar);
-        }
-    };
-
-    let bucket = state.user_bucket(raw_username);
-    let user_at = match state.user_limiter.as_ref().map(|l| l.try_attempt(bucket)) {
-        None => None,
-        Some(Attempt::Allowed {
-            at,
-            locked_after: user_locked,
-        }) => {
-            locked_after |= user_locked;
-            Some(at)
-        }
-        Some(Attempt::Locked) => {
-            tracing::warn!(%ip, user = %shown, "sign-in refused: account rate limit");
+            tracing::warn!(%ip, user = %shown, "sign-in refused: account locked");
             return locked(&state, jar);
         }
     };
@@ -190,22 +146,19 @@ pub async fn submit(
         })
     };
 
-    let verdict = match eligible {
-        None => Verdict::Refused,
-        Some(user) => match Arc::clone(&state.login_slots).try_acquire_owned() {
-            Err(_) => Verdict::Busy,
-            Ok(_slot) => {
-                if state
-                    .check_password(user.password_hash.clone(), form.password)
-                    .await
-                {
-                    Verdict::Signed(user)
-                } else {
-                    why = "wrong password";
-                    Verdict::Refused
-                }
-            }
-        },
+    let signed = match eligible {
+        Some(user)
+            if state
+                .check_password(user.password_hash.clone(), form.password)
+                .await =>
+        {
+            Some(user)
+        }
+        Some(_) => {
+            why = "wrong password";
+            None
+        }
+        None => None,
     };
 
     let release_claim = || {
@@ -214,46 +167,24 @@ pub async fn submit(
         }
     };
 
-    let user = match verdict {
-        Verdict::Signed(user) => user,
-        Verdict::Busy => {
-            release_claim();
-            if let (Some(l), Some(at)) = (state.user_limiter.as_ref(), user_at) {
-                l.refund(bucket, at);
-            }
-            state.limiter.refund(ip, at);
-            tracing::warn!(%ip, user = %shown, "sign-in refused: too many sign-ins waiting");
-            return page(
-                &state,
-                jar,
-                StatusCode::SERVICE_UNAVAILABLE,
-                LoginState::Busy,
-                rd,
-                shown,
-            );
+    let Some(user) = signed else {
+        release_claim();
+        if locked_after {
+            tracing::warn!(%ip, user = %shown, why, "sign-in failed; account now locked");
+            return locked(&state, jar);
         }
-        Verdict::Refused => {
-            release_claim();
-            if locked_after {
-                tracing::warn!(%ip, user = %shown, why, "sign-in failed; now rate limited");
-                return locked(&state, jar);
-            }
-            tracing::warn!(%ip, user = %shown, why, "sign-in failed");
-            return page(
-                &state,
-                jar,
-                StatusCode::UNAUTHORIZED,
-                LoginState::WrongPassword,
-                rd,
-                shown,
-            );
-        }
+        tracing::warn!(%ip, user = %shown, why, "sign-in failed");
+        return page(
+            &state,
+            jar,
+            StatusCode::UNAUTHORIZED,
+            LoginState::WrongPassword,
+            rd,
+            shown,
+        );
     };
 
-    if let (Some(l), Some(at)) = (state.user_limiter.as_ref(), user_at) {
-        l.refund(bucket, at);
-    }
-    state.limiter.refund(ip, at);
+    state.lockout.refund(raw_username, at);
     let username = raw_username.to_owned();
     let now = token::now();
     let claims = Claims {

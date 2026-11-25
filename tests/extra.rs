@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::string_slice)]
 mod common;
 
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -18,13 +17,12 @@ fn state_with(
 ) -> SharedState {
     Arc::new(AppState {
         totp: rs_auth::totp::Replay::default(),
-        limiter: rs_auth::ratelimit::RateLimiter::new(
+        lockout: rs_auth::lockout::Lockout::new(
             config.login.max_attempts,
             config.login.window,
+            &config.session.secret,
         ),
-        user_limiter: None,
         hash_permits: Arc::new(Semaphore::new(2)),
-        login_slots: Arc::new(Semaphore::new(4)),
         revocations: Arc::new(revocations),
         signer,
         config,
@@ -74,35 +72,6 @@ async fn user_data_that_cannot_be_a_header_fails_closed() {
     assert!(r.header("remote-user").is_none());
     assert!(r.header("remote-name").is_none());
     assert!(r.header("injected").is_none());
-}
-
-#[tokio::test]
-async fn a_full_limiter_table_refuses_new_clients_at_the_handler() {
-    let state = default_state();
-    let app = rs_auth::router(state.clone());
-    let (cookie, token) = csrf(&app, OUTSIDE).await;
-    for i in 0..50_000u32 {
-        let ip = IpAddr::V4(Ipv4Addr::from(0x0B00_0000 + i));
-        state.limiter.try_attempt(ip);
-    }
-    let r = send(
-        &app,
-        OUTSIDE,
-        post_form(
-            "/login",
-            &cookie,
-            &[
-                ("username", "aaron"),
-                ("password", "correct horse"),
-                ("csrf", &token),
-            ],
-        ),
-    )
-    .await;
-    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
-    assert!(r.cookie("rs_auth_session").is_none());
-    assert!(r.header("retry-after").is_none());
-    assert!(r.body.contains("Too many sign-in attempts"));
 }
 
 #[tokio::test]
