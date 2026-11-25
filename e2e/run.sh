@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-proxy=${1:?usage: e2e/run.sh traefik|caddy}
+proxy=${1:?usage: e2e/run.sh traefik|caddy|nginx}
 cd "$(dirname "$0")/.."
 compose="docker compose -f e2e/$proxy/docker-compose.yml ${E2E_COMPOSE_EXTRA:-}"
 status=0

@@ -330,7 +330,7 @@ s=$(req forgedcookie - -H "Cookie: rs_auth_session=$live" -H "Cookie: app_pref=x
 check "two Cookie headers are handled (200)" "$s" 200
 lacks "and the session cookie is still removed" "$TMP/forgedcookie.body" "rs_auth_session"
 s=$(req dup - -H "Cookie: rs_auth_session=$live; rs_auth_session=planted.by.a.sibling" "$APP/")
-check "two different session cookies are refused (400)" "$s" 400
+check "two different session cookies are refused (${DUP_COOKIE_STATUS:-400})" "$s" "${DUP_COOKIE_STATUS:-400}"
 lacks "and the app content is not served" "$TMP/dup.body" "Hostname:"
 s=$(req dupsame - -H "Cookie: rs_auth_session=$live; rs_auth_session=$live" "$APP/")
 check "the same session cookie twice is fine (200)" "$s" 200

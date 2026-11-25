@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        proxy: [traefik, caddy]
+        proxy: [traefik, caddy, nginx]
     name: e2e (${{ matrix.proxy }})
     env:
       COMPOSE: docker compose -f e2e/${{ matrix.proxy }}/docker-compose.yml
