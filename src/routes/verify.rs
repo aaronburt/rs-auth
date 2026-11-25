@@ -11,11 +11,36 @@ use crate::redirect as rd;
 use crate::state::{AppState, SharedState};
 use crate::{access, cookie, net, ui};
 
+#[derive(Clone, Copy)]
+enum Style {
+    Redirect,
+    Status,
+}
+
 pub async fn verify(
     State(state): State<SharedState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
+) -> Response {
+    check(&state, peer, &headers, &jar, Style::Redirect)
+}
+
+pub async fn verify_nginx(
+    State(state): State<SharedState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    jar: CookieJar,
+) -> Response {
+    check(&state, peer, &headers, &jar, Style::Status)
+}
+
+fn check(
+    state: &AppState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+    style: Style,
 ) -> Response {
     let config = &state.config;
 
@@ -29,36 +54,41 @@ pub async fn verify(
         return (StatusCode::BAD_REQUEST, "ambiguous session cookie").into_response();
     }
 
-    let Some(original) = rd::original_url(&headers) else {
+    let Some(original) = rd::original_url(headers) else {
         tracing::warn!("verify called without X-Forwarded-Proto/Host headers");
         return unauthorized();
     };
     let host = original.host_str().unwrap_or_default();
-    let session = state.session_user(&jar);
+    let session = state.session_user(jar);
 
     let Some(rule) = config.access.groups_for(host) else {
         tracing::info!(%host, "no access rule for this host");
-        return forbidden(&state, host, session.as_ref().map(|s| s.username));
+        return forbidden(state, host, session.as_ref().map(|s| s.username));
     };
 
     let Some(s) = session else {
         let back = rd::validate_rd(config, original.as_str());
         let login = rd::login_url(config, back.as_ref());
-        let method = headers
-            .get("x-forwarded-method")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("GET");
-        let status = if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
-            StatusCode::FOUND
-        } else {
-            StatusCode::SEE_OTHER
+        let status = match style {
+            Style::Status => StatusCode::UNAUTHORIZED,
+            Style::Redirect => {
+                let method = headers
+                    .get("x-forwarded-method")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("GET");
+                if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
+                    StatusCode::FOUND
+                } else {
+                    StatusCode::SEE_OTHER
+                }
+            }
         };
         return redirect(status, login.as_str());
     };
 
     if !access::allows(rule, &s.user.groups) {
         tracing::info!(user = %s.username, %host, "user is not in a group allowed on this host");
-        return forbidden(&state, host, Some(s.username));
+        return forbidden(state, host, Some(s.username));
     }
 
     let groups = s.user.groups.join(",");

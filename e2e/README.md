@@ -1,11 +1,16 @@
 # End-to-end tests
 
-The same checks, [`test.sh`](test.sh), run against rs-auth behind two real
+The same checks, [`test.sh`](test.sh), run against rs-auth behind three real
 proxies in Docker:
 
 - [`traefik/`](traefik): Traefik 3.7 with its `forwardAuth` middleware and
   the file provider.
 - [`caddy/`](caddy): Caddy 2.11 with `forward_auth` and `copy_headers`.
+- [`nginx/`](nginx): nginx 1.30 with `auth_request`, using the snippets from
+  [`examples/nginx`](../examples/nginx) and a self-signed certificate made when
+  it starts. The only difference in what it checks is that two different session
+  cookies get `500` (nginx can't pass rs-auth's `400` on), set with
+  `DUP_COOKIE_STATUS`.
 
 Each setup runs rs-auth (built from this repo) with its sign-out list on a
 volume, a second rs-auth with an edited config
@@ -20,7 +25,7 @@ address 172.30.1.10 (the only trusted proxy), and the app is on the internal
 docker compose -f e2e/traefik/docker-compose.yml build
 sh e2e/run.sh traefik
 docker compose -f e2e/traefik/docker-compose.yml --profile phases down -v
-# or caddy
+# or caddy, or nginx
 ```
 
 [`run.sh`](run.sh) runs four phases and exits 0 when every check passes:
@@ -39,7 +44,7 @@ docker compose -f e2e/traefik/docker-compose.yml --profile phases down -v
   `5xx` and no app content.
 
 The first build compiles rs-auth inside Docker, which takes a few minutes.
-Both setups use the same subnets, so run one at a time. CI runs both on every
+All setups use the same subnets, so run one at a time. CI runs all three on every
 push and pull request in the `e2e` job of
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml), and prints the
 container logs if a check fails.

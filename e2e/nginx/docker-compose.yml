@@ -1,0 +1,127 @@
+# End-to-end test of rs-auth behind nginx with auth_request, using the
+# snippets from examples/nginx and a throwaway self-signed certificate. Run it
+# with e2e/run.sh nginx.
+#
+# Networks match examples/nginx: only nginx is on "edge"; rs-auth sits on
+# the internal "auth" network and the app on the internal "apps" network, and
+# rs-auth trusts only nginx's fixed address on "auth". The tester joins all
+# three so it can also check what an untrusted neighbour can and cannot do;
+# the outsider joins only "edge".
+name: rs-auth-e2e-nginx
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  auth:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+  apps:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
+
+volumes:
+  rs_auth_data:
+  state:
+  certs:
+
+services:
+  certs:
+    image: nginx:1.30.8-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        apk add --no-cache openssl >/dev/null &&
+        openssl req -x509 -newkey rsa:2048 -nodes -days 2
+        -keyout /certs/key.pem -out /certs/cert.pem -subj /CN=example.test
+        -addext "subjectAltName=DNS:*.example.test,DNS:*.lab.example.test"
+    volumes:
+      - certs:/certs
+    networks: [edge]
+
+  nginx:
+    image: nginx:1.30.8-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../examples/nginx/rs-auth.conf:/etc/nginx/rs-auth.conf:ro
+      - ../../examples/nginx/rs-auth-server.conf:/etc/nginx/rs-auth-server.conf:ro
+      - certs:/etc/nginx/certs:ro
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      whoami:
+        condition: service_started
+    networks:
+      edge:
+        ipv4_address: 172.30.0.10
+        aliases: [auth.example.test, whoami.example.test, other.example.test, changed.example.test, admins.example.test, x.lab.example.test, lab.example.test, unlisted.example.test]
+      auth:
+        ipv4_address: 172.30.1.10
+      apps:
+        ipv4_address: 172.30.2.10
+
+  rs-auth:
+    build: ../..
+    environment:
+      RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
+      RUST_LOG: info
+    volumes:
+      - ../config.toml:/config/config.toml:ro
+      - rs_auth_data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [auth]
+
+  rs-auth-changed:
+    build: ../..
+    environment:
+      RS_AUTH_JWT_SECRET: e2e-only-secret-e2e-only-secret-e2e-only
+      RUST_LOG: info
+    volumes:
+      - ../config-changed.toml:/config/config.toml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rs-auth", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [auth]
+
+  whoami:
+    image: traefik/whoami:v1.10
+    networks: [apps]
+
+  tester:
+    image: curlimages/curl:8.11.1
+    user: "0"
+    environment:
+      DUP_COOKIE_STATUS: "500"
+    entrypoint: ["/bin/sh", "/test.sh"]
+    volumes:
+      - ../test.sh:/test.sh:ro
+      - state:/state
+    depends_on:
+      rs-auth:
+        condition: service_healthy
+      rs-auth-changed:
+        condition: service_healthy
+      nginx:
+        condition: service_started
+      whoami:
+        condition: service_started
+    networks: [edge, auth, apps]
+
+  outsider:
+    image: curlimages/curl:8.11.1
+    entrypoint: ["/bin/sh", "/test.sh", "outside"]
+    volumes:
+      - ../test.sh:/test.sh:ro
+    profiles: [phases]
+    networks: [edge]

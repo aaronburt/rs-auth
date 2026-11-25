@@ -1,6 +1,6 @@
 # rs-auth
 
-A small forward-auth login portal for Traefik and Caddy, written in Rust.
+A small forward-auth login portal for Traefik, Caddy and nginx, written in Rust.
 
 rs-auth sits beside your reverse proxy and guards your apps with one login
 page. The proxy asks `GET /api/verify` on every request. Each host is open only
@@ -28,8 +28,8 @@ openssl rand -hex 32 > jwt.secret           # point session.jwt_secret_file at i
 To try it in a browser first, run the demo in [`examples/demo`](examples/demo/docker-compose.yml)
 (Docker, no hosts-file changes) and open https://whoami.rs-auth.localhost:8443.
 
-Then wire up your proxy: see [`examples/traefik`](examples/traefik) or
-[`examples/caddy`](examples/caddy).
+Then wire up your proxy: see [`examples/traefik`](examples/traefik),
+[`examples/caddy`](examples/caddy) or [`examples/nginx`](examples/nginx).
 
 ## Commands
 
@@ -49,6 +49,7 @@ Log level follows `RUST_LOG`: `error`, `warn`, `info`, `debug` or `trace` (defau
 | Method | Path | Called by | Does |
 | --- | --- | --- | --- |
 | GET | `/api/verify` | The proxy, internally | Host with no `[access]` entry: `403` for everyone. Not signed in: `302` to `/login?rd=<original URL>` (`303` for non-GET requests). Signed in but not in one of the host's groups: `403` with a "No access" page. Otherwise `200`, `Remote-*` headers, and a `Cookie` header holding the request's other cookies (see [Proxy setup](#proxy-setup)). Two session cookies with different values get `400`. Callers outside `server.trusted_proxies`, or requests missing `X-Forwarded-Proto`/`Host`, get `401`. Never route it publicly. |
+| GET | `/api/verify/nginx` | nginx, internally | The same checks and the same answers as `/api/verify`, except that not signed in is a plain `401` with the login address in `Location`, because nginx's `auth_request` accepts only `2xx`, `401` and `403` (see [nginx](#nginx)). Never route it publicly. |
 | GET | `/login?rd=<url>` | Browser | The sign-in form. Already signed in: straight to `rd`. |
 | POST | `/login` | Form | Checks CSRF, the rate limits, the username, the code (if the user has one) and then the password, cheapest first. Success sets the cookie and `303`s to `rd`. Wrong password: `401` and an amber message. Locked out: `429` and a red message. Too many sign-ins already waiting: `503` and an amber message. |
 | GET | `/logout` | Browser | A "Sign out?" page. Apps link here. |
@@ -207,8 +208,9 @@ them overwrite each other's writes.
 ## Proxy setup
 
 The examples in [`examples/traefik`](examples/traefik) (file provider, no
-Docker socket) and [`examples/caddy`](examples/caddy) follow these rules, and
-[`e2e`](e2e/README.md) checks them behind both proxies:
+Docker socket), [`examples/caddy`](examples/caddy) and
+[`examples/nginx`](examples/nginx) follow these rules, and
+[`e2e`](e2e/README.md) checks them behind all three proxies:
 
 - **Trust one address.** Give the proxy a fixed IP on a network it shares only
   with rs-auth, and put just that `/32` in `server.trusted_proxies`. Never trust
@@ -217,25 +219,70 @@ Docker socket) and [`examples/caddy`](examples/caddy) follow these rules, and
   and the apps sit on separate `internal` Docker networks, so apps can't reach
   rs-auth and nothing outside can reach either.
 - **Don't route `/api/verify` publicly.** The portal route excludes it
-  (Traefik: `!PathPrefix(`/api/verify`)`, Caddy: `respond @verify 404`). The
-  proxy's own forward-auth calls go straight to rs-auth and are unaffected.
+  (Traefik: `!PathPrefix(`/api/verify`)`, Caddy: `respond @verify 404`, nginx:
+  `location ^~ /api/verify { return 404; }`). The proxy's own forward-auth calls
+  go straight to rs-auth and are unaffected.
 - **Strip the session cookie.** List `Cookie` in Traefik's
-  `authResponseHeaders` or Caddy's `copy_headers`. On success rs-auth returns
-  the request's cookies minus its own, and the proxy replaces the request's
-  `Cookie` header with that (or removes it if nothing is left), so the app keeps
-  its own cookies but never sees the session token.
+  `authResponseHeaders`, Caddy's `copy_headers`, or nginx's
+  `auth_request_set $auth_cookie $upstream_http_cookie` with
+  `proxy_set_header Cookie $auth_cookie`. On success rs-auth returns the
+  request's cookies minus its own, and the proxy replaces the request's `Cookie`
+  header with that (or removes it if nothing is left), so the app keeps its own
+  cookies but never sees the session token.
 - **Drop header aliases.** Some app stacks treat `Remote_User` as
   `Remote-User`. Traefik's `--entrypoints.websecure.http.aliasHeadersStrategy=delete`
   removes such aliases at the public entry point; the Caddy examples delete
-  `Remote_*` request headers.
+  `Remote_*` request headers; nginx drops headers with underscores unless you
+  turn on `underscores_in_headers`, so leave that off.
 - **Bound slow and greedy clients.** Traefik: `respondingTimeouts.readTimeout`
   (it has no separate header timeout, so this bounds headers and body together),
   `http.maxHeaderBytes`, and an `inFlightReq` limit per client IP on the entry
   point. Caddy: `timeouts { read_header read_body idle }`, `max_header_size`, and
-  `max_conns_per_host` on the transports to rs-auth. Caddy has no built-in
+  `max_conns_per_host` on the transports to rs-auth. nginx: `client_header_timeout`,
+  `client_body_timeout`, `large_client_header_buffers` and `limit_conn` per client
+  IP. Caddy has no built-in
   per-client connection limit; use a host firewall or a plugin if you need one.
-- **Fail closed.** If rs-auth is down, both proxies answer `5xx` and never pass
+- **Fail closed.** If rs-auth is down, all three proxies answer `5xx` and never pass
   the request to the app. The e2e suite checks this with the app healthy.
+
+## nginx
+
+nginx's `auth_request` is stricter than Traefik's `forwardAuth` and Caddy's
+`forward_auth`: it accepts only `2xx`, `401` or `403` from the check and turns
+every other status, redirects included, into a `500`. So nginx calls
+`/api/verify/nginx`, which answers like `/api/verify` except that a user who
+isn't signed in gets a plain `401` with the login address in a `Location`
+header, and nginx sends the redirect itself (`302` for `GET` and `HEAD`, `303`
+otherwise). The examples in [`examples/nginx`](examples/nginx) are two small
+snippets:
+
+- [`rs-auth-server.conf`](examples/nginx/rs-auth-server.conf), included once in
+  each `server` block after `set $rs_auth http://rs-auth:9091;`, holds the
+  internal address nginx asks and the redirect.
+- [`rs-auth.conf`](examples/nginx/rs-auth.conf), included in each `location`
+  that proxies to an app, runs the check and sets `Remote-User`,
+  `Remote-Groups`, `Remote-Name`, `Remote-Email` and `Cookie` on the request to
+  the app. Each `proxy_set_header` replaces whatever the client sent, and an
+  empty value removes the header, so forged `Remote-*` headers never get through.
+
+What to know:
+
+- The host rs-auth checks comes from the `X-Forwarded-Host`, `-Proto` and `-Uri`
+  headers the internal address sets from nginx's own `$http_host`, `$scheme` and
+  `$request_uri`, never from what the client sent. Keep those three lines.
+- A signed-in user who isn't allowed on a host gets rs-auth's "No access" page
+  with a `403` (nginx asks the same internal address again for it). A `403` the
+  app itself sends is passed through untouched.
+- Two different session cookies make rs-auth answer `400`; nginx turns that
+  into a `500`, so the request is still refused.
+- Include `rs-auth.conf` in every `location` that proxies to an app. A location
+  without it is not protected.
+- `proxy_set_header` lines in a `location` replace the ones from its parent, so
+  any you add must sit in the same `location` as the include.
+- The examples use Docker's resolver (`resolver 127.0.0.11`) and a variable in
+  `proxy_pass`, so nginx looks rs-auth up again when its container is replaced.
+  Without Docker, point `resolver` at your DNS server or use a fixed address.
+- Needs nginx 1.25.1 or newer for `http2 on;`; drop that line on older versions.
 
 ## Security notes
 
@@ -278,7 +325,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-For a full check behind a real Traefik or Caddy in Docker, see
+For a full check behind a real Traefik, Caddy or nginx in Docker, see
 [`e2e`](e2e/README.md):
 
 ```sh
@@ -297,7 +344,7 @@ path-level rules, or serves OIDC clients.
 
 ## Not in v1
 
-Path or method access rules, nginx support, config hot reload, remember-me,
+Path or method access rules, config hot reload, remember-me,
 server-side sessions, 2FA, password reset, LDAP or database users, and an
 OIDC provider. Token signing sits behind a `TokenSigner` trait and `iss` is
 set from day one, so OIDC can be added later without a rewrite.

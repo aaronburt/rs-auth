@@ -24,6 +24,10 @@ pub fn router(state: SharedState) -> Router {
         .route("/", get(|| async { Redirect::to("/login") }))
         .route("/healthz", get(health::healthz))
         .route("/api/verify", get(verify::verify).head(verify::verify))
+        .route(
+            "/api/verify/nginx",
+            get(verify::verify_nginx).head(verify::verify_nginx),
+        )
         .route("/login", get(login::show).post(login::submit))
         .route("/logout", get(logout::show).post(logout::submit))
         .route("/logged-in", get(login::signed_in))
