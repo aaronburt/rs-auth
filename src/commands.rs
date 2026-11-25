@@ -65,12 +65,25 @@ pub fn hash_for(pw: &str) -> Res<(String, Option<&'static str>)> {
 pub struct NewTotp {
     pub secret: String,
     pub uri: Option<String>,
+    pub qr: Option<String>,
 }
 
 pub fn new_totp_secret(account: Option<&str>) -> NewTotp {
     let secret = totp::encode_secret(&crate::random::bytes::<{ totp::SECRET_BYTES }>());
     let uri = account.map(|a| totp::otpauth_uri(&secret, a, "rs-auth"));
-    NewTotp { secret, uri }
+    let qr = uri.as_deref().and_then(terminal_qr);
+    NewTotp { secret, uri, qr }
+}
+
+pub fn terminal_qr(text: &str) -> Option<String> {
+    use qrcode::{QrCode, render::unicode::Dense1x2};
+    let code = QrCode::new(text.as_bytes()).ok()?;
+    Some(
+        code.render::<Dense1x2>()
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark)
+            .build(),
+    )
 }
 
 pub fn log_level(rust_log: Option<&str>) -> LevelFilter {

@@ -37,7 +37,7 @@ Then wire up your proxy: see [`examples/traefik`](examples/traefik) or
 | --- | --- |
 | `rs-auth serve [-c config.toml]` | Runs the portal. `RS_AUTH_CONFIG` also sets the path. |
 | `rs-auth hash-password [--stdin]` | Prompts twice and prints an Argon2id hash. |
-| `rs-auth totp-secret [username]` | Prints a new TOTP secret and, with a username, an `otpauth://` link for an authenticator app. |
+| `rs-auth totp-secret [username]` | Prints a new TOTP secret and, with a username, an `otpauth://` link and a terminal QR code for an authenticator app. |
 | `rs-auth check-config [-c config.toml]` | Validates the config without starting. |
 | `rs-auth healthcheck [addr]` | Exits 0 if `/healthz` answers. Used by the Docker image. |
 
@@ -82,7 +82,7 @@ Changes to the config apply on restart.
 Give a user an authenticator-app code by adding a secret to their table:
 
 ```sh
-rs-auth totp-secret aaron     # prints the secret, then an otpauth:// link
+rs-auth totp-secret aaron     # prints the secret, an otpauth:// link and a QR code
 ```
 
 ```toml
