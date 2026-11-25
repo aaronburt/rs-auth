@@ -6,6 +6,9 @@
 #   docker compose -f examples/demo/docker-compose.yml down
 #
 # Users: aaron / aaron-test-pass, guest / guest-test-pass
+# aaron also needs a 6-digit code. Add this link to an authenticator app (or any TOTP tool):
+#   otpauth://totp/rs-auth:aaron?secret=AJ4QOR6FKGFNWJSIC7EGQDEFGIDMLPEO&issuer=rs-auth
+# guest has no code, so leave the code box empty for guest.
 # other.rs-auth.localhost is admins-only: sign in as guest there to see the 403 page.
 name: rs-auth-demo
 
