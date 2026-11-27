@@ -203,7 +203,6 @@ async fn cheap_failures_never_reach_argon2() {
         .acquire_many_owned(u32::try_from(hold).unwrap())
         .await
         .unwrap();
-    let slots = state.login_slots.available_permits();
 
     for (user, pw, c) in [
         ("nobody", "correct horse", code(0)),
@@ -216,7 +215,6 @@ async fn cheap_failures_never_reach_argon2() {
         let r = finishes_fast(&app, user, pw, &c).await;
         assert_eq!(r.status, StatusCode::UNAUTHORIZED, "{user} {c}");
     }
-    assert_eq!(state.login_slots.available_permits(), slots);
     assert_eq!(state.hash_permits.available_permits(), 0);
 }
 
@@ -239,34 +237,7 @@ async fn a_right_code_does_go_on_to_the_password_check() {
 }
 
 #[tokio::test]
-async fn a_busy_server_does_not_burn_the_code_or_an_attempt() {
-    let (app, state) = built();
-    let slots = state.login_slots.available_permits();
-    let held = Arc::clone(&state.login_slots)
-        .try_acquire_many_owned(u32::try_from(slots).unwrap())
-        .unwrap();
-    let c = code(0);
-    let r = login_from(&app, "198.51.100.77", "aaron", "correct horse", &c).await;
-    assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(r.body.contains("Sign-in is busy"));
-    drop(held);
-    let r = login_from(&app, "198.51.100.77", "aaron", "correct horse", &c).await;
-    assert_eq!(r.status, StatusCode::SEE_OTHER);
-}
-
-#[tokio::test]
-async fn busy_does_not_apply_to_cheap_failures() {
-    let (app, state) = built();
-    let slots = state.login_slots.available_permits();
-    let _held = Arc::clone(&state.login_slots)
-        .try_acquire_many_owned(u32::try_from(slots).unwrap())
-        .unwrap();
-    let r = login(&app, "aaron", "correct horse", "").await;
-    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn bad_codes_use_up_the_clients_attempts() {
+async fn bad_codes_use_up_the_accounts_attempts() {
     let (app, _) = built();
     for _ in 0..4 {
         let r = login_from(&app, "198.51.100.5", "aaron", "correct horse", "000000").await;

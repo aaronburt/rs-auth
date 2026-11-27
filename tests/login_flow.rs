@@ -477,7 +477,7 @@ async fn missing_csrf_is_refused_without_counting_an_attempt() {
 }
 
 #[tokio::test]
-async fn rate_limit_locks_out_per_ip_and_says_nothing_about_duration() {
+async fn lockout_says_nothing_about_attempts_left_or_duration() {
     let app = app();
     let (cookie, token) = csrf(&app, PROXY).await;
     let attempt = |pw: &'static str, ip: &'static str| {
@@ -526,45 +526,26 @@ async fn rate_limit_locks_out_per_ip_and_says_nothing_about_duration() {
         }
     }
 
-    let mut req = get("/login", "");
+    let r = attempt("correct horse", "198.51.100.2").await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "from any address");
+
+    let mut req = post_form(
+        "/login",
+        &cookie,
+        &[
+            ("username", "guest"),
+            ("password", "guest pass"),
+            ("csrf", &token),
+        ],
+    );
     req.headers_mut()
         .insert("x-forwarded-for", "198.51.100.1".parse().unwrap());
     let r = send(&app, PROXY, req).await;
-    assert!(r.body.contains("Too many sign-in attempts"));
-
-    let r = attempt("correct horse", "198.51.100.2").await;
-    assert_eq!(r.status, StatusCode::SEE_OTHER);
-}
-
-#[tokio::test]
-async fn spoofed_forwarded_for_from_untrusted_peer_is_ignored() {
-    let app = app();
-    let (cookie, token) = csrf(&app, OUTSIDE).await;
-    for i in 0..5 {
-        let mut req = post_form(
-            "/login",
-            &cookie,
-            &[("username", "aaron"), ("password", "bad"), ("csrf", &token)],
-        );
-        req.headers_mut()
-            .insert("x-forwarded-for", format!("10.9.9.{i}").parse().unwrap());
-        send(&app, OUTSIDE, req).await;
-    }
-    let r = send(
-        &app,
-        OUTSIDE,
-        post_form(
-            "/login",
-            &cookie,
-            &[
-                ("username", "aaron"),
-                ("password", "correct horse"),
-                ("csrf", &token),
-            ],
-        ),
-    )
-    .await;
-    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        r.status,
+        StatusCode::SEE_OTHER,
+        "other accounts are unaffected"
+    );
 }
 
 #[tokio::test]

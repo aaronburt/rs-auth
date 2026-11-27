@@ -35,12 +35,13 @@ jwt_secret_file = "/run/secrets/rs_auth_jwt"
 # revocation_file = "/data/revoked.txt"
 
 [login]
-max_attempts = 5            # failed sign-ins per client IP ...
-window = "5m"               # ... within this sliding window
-# Failed sign-ins per username, from any IP, within the same window. Stops
-# slow guessing spread over many addresses. Someone who knows a username can
-# use it to lock that account out for a window; 0 turns it off.
-max_attempts_per_user = 20
+# Failed sign-ins per username, from any address, within this sliding window.
+# Once reached, that account refuses every sign-in, even with the right
+# password, until the oldest failure leaves the window. Anyone who knows a
+# username can use this to keep that account locked out, so pick the number
+# with that in mind. Throttling by address is left to your proxy or firewall.
+max_attempts = 5
+window = "5m"
 
 # Which groups may open each host. A host with no entry gets 403 for everyone.
 # A user needs any one of the listed groups. "*.lab.example.com" covers every

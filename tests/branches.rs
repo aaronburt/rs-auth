@@ -164,7 +164,7 @@ async fn login_limits_each_input_separately() {
         ("", ""),
     ];
     for (user, pw) in cases {
-        // a fresh app per case, so the limiter never gets involved
+        // a fresh app per case, so the lockout never gets involved
         let app = app();
         let (cookie, token) = csrf(&app, PROXY).await;
         let r = send(

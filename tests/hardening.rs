@@ -3,13 +3,12 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use common::*;
-use rs_auth::{AppState, SharedState};
+use rs_auth::AppState;
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir =
@@ -28,11 +27,8 @@ fn with_revocation_file(file: &Path) -> String {
     )
 }
 
-fn with_user_limit(n: u32) -> String {
-    toml(1, &["admins"], true).replace(
-        "window = \"5m\"\n",
-        &format!("window = \"5m\"\nmax_attempts_per_user = {n}\n"),
-    )
+fn with_attempts(n: u32) -> String {
+    toml(1, &["admins"], true).replace("max_attempts = 5", &format!("max_attempts = {n}"))
 }
 
 async fn verify_status(app: &Router, session: &str) -> StatusCode {
@@ -257,7 +253,7 @@ fn login_from(client: &str, cookie: &str, user: &str, pw: &str, token: &str) -> 
 
 #[tokio::test]
 async fn failures_for_one_username_from_many_addresses_lock_that_account() {
-    let app = app_with(&with_user_limit(3));
+    let app = app_with(&with_attempts(3));
     let (cookie, token) = csrf(&app, PROXY).await;
     for n in 1..=2 {
         let r = send(
@@ -302,7 +298,7 @@ async fn failures_for_one_username_from_many_addresses_lock_that_account() {
 
 #[tokio::test]
 async fn unknown_usernames_lock_the_same_way_as_real_ones() {
-    let app = app_with(&with_user_limit(2));
+    let app = app_with(&with_attempts(2));
     let (cookie, token) = csrf(&app, PROXY).await;
     let mut statuses = Vec::new();
     for n in 1..=3 {
@@ -328,7 +324,7 @@ async fn unknown_usernames_lock_the_same_way_as_real_ones() {
 
 #[tokio::test]
 async fn a_successful_sign_in_does_not_count_against_the_account() {
-    let app = app_with(&with_user_limit(2));
+    let app = app_with(&with_attempts(2));
     let (cookie, token) = csrf(&app, PROXY).await;
     for n in 1..=3 {
         let r = send(
@@ -348,81 +344,16 @@ async fn a_successful_sign_in_does_not_count_against_the_account() {
 }
 
 #[tokio::test]
-async fn the_account_limit_can_be_turned_off() {
-    let app = app_with(&with_user_limit(0));
+async fn one_address_is_never_limited_across_different_accounts() {
+    let app = app_with(&with_attempts(2));
     let (cookie, token) = csrf(&app, PROXY).await;
-    for n in 1..=6 {
+    for n in 0..40 {
         let r = send(
             &app,
             PROXY,
-            login_from(&format!("198.51.100.{n}"), &cookie, "aaron", "nope", &token),
+            login_from("198.51.100.1", &cookie, &format!("user{n}"), "nope", &token),
         )
         .await;
-        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED, "attempt {n}");
     }
-}
-
-fn app_and_state() -> (Router, SharedState) {
-    let state = AppState::new(config_from(&toml(1, &["admins"], true)));
-    (rs_auth::router(Arc::clone(&state)), state)
-}
-
-#[tokio::test]
-async fn sign_ins_beyond_the_queue_get_busy_without_using_an_attempt() {
-    let (app, state) = app_and_state();
-    let (cookie, token) = csrf(&app, PROXY).await;
-    let total = state.login_slots.available_permits();
-    assert_eq!(
-        total,
-        state.hash_permits.available_permits() + rs_auth::state::MAX_QUEUED_LOGINS
-    );
-    let held = Arc::clone(&state.login_slots)
-        .try_acquire_many_owned(u32::try_from(total).unwrap())
-        .unwrap();
-    for _ in 0..8 {
-        let r = send(
-            &app,
-            PROXY,
-            login_from("198.51.100.9", &cookie, "aaron", "nope", &token),
-        )
-        .await;
-        assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(r.body.contains("Sign-in is busy"), "{}", r.body);
-        assert!(r.header("retry-after").is_none());
-    }
-    drop(held);
-    let r = send(
-        &app,
-        PROXY,
-        login_from("198.51.100.9", &cookie, "aaron", "correct horse", &token),
-    )
-    .await;
-    assert_eq!(
-        r.status,
-        StatusCode::SEE_OTHER,
-        "busy refusals did not use up the client's attempts"
-    );
-    assert_eq!(state.login_slots.available_permits(), total);
-}
-
-#[tokio::test]
-async fn the_user_bucket_is_stable_and_bounded() {
-    let (_, state) = app_and_state();
-    assert_eq!(state.user_bucket("aaron"), state.user_bucket("aaron"));
-    for name in ["aaron", "guest", "", "x".repeat(200).as_str()] {
-        assert!(state.user_bucket(name) < rs_auth::state::USER_BUCKETS);
-    }
-}
-
-#[test]
-fn the_account_limit_defaults_to_twenty_and_can_be_set() {
-    let c = config_from(&toml(1, &["admins"], false));
-    assert_eq!(c.login.max_attempts_per_user, 20);
-    assert_eq!(
-        config_from(&with_user_limit(7)).login.max_attempts_per_user,
-        7
-    );
-    let no_login =
-        toml(1, &["admins"], false).replace("[login]\nmax_attempts = 5\nwindow = \"5m\"\n", "");
-    assert_eq!(config_from(&no_login).login.max_attempts_per_user, 20);
 }

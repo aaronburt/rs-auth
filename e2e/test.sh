@@ -404,7 +404,7 @@ s=$(sign_in jar_nototp aaron aaron-test-pass "" "123456")
 check "a user without a secret ignores the code box (303)" "$s" 303
 
 echo
-echo "16. Rate limit (run last: it locks out this container's IP)"
+echo "16. Account lockout (run last: it locks the aaron account)"
 touch "$TMP/jar_rl"
 req rlpage jar_rl "$AUTH/login" >/dev/null
 t=$(csrf_of rlpage)
@@ -416,7 +416,7 @@ while [ $n -le 10 ]; do
 done
 s=$(req rl jar_rl -X POST "$AUTH/login" -H "X-Forwarded-For: 10.0.0.99" \
   --data-urlencode "username=aaron" --data-urlencode "password=aaron-test-pass" --data-urlencode "csrf=$t")
-check "after 10 failures even the right password is refused (429)" "$s" 429
+check "after 10 failures the account is locked and even the right password is refused (429)" "$s" 429
 contains "shows the locked-out message" "$TMP/rl.body" "Too many sign-in attempts"
 lacks "sends no Retry-After" "$TMP/rl.head" "retry-after"
 lacks "sets no session cookie" "$TMP/rl.head" "rs_auth_session="

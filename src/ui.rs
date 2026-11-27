@@ -95,7 +95,6 @@ pub enum LoginState {
     WrongPassword,
     FormExpired,
     LockedOut,
-    Busy,
 }
 
 #[derive(Template)]
@@ -120,9 +119,6 @@ impl LoginPage<'_> {
     }
     fn is_locked(&self) -> bool {
         self.state == LoginState::LockedOut
-    }
-    fn is_busy(&self) -> bool {
-        self.state == LoginState::Busy
     }
     fn focus_password(&self) -> bool {
         self.is_wrong_password() || (!self.username.is_empty() && !self.is_locked())

@@ -165,8 +165,6 @@ struct RawLogin {
     max_attempts: u32,
     #[serde(default = "default_window")]
     window: HumanDuration,
-    #[serde(default = "default_max_attempts_per_user")]
-    max_attempts_per_user: u32,
 }
 
 impl Default for RawLogin {
@@ -174,16 +172,12 @@ impl Default for RawLogin {
         Self {
             max_attempts: default_max_attempts(),
             window: default_window(),
-            max_attempts_per_user: default_max_attempts_per_user(),
         }
     }
 }
 
 fn default_max_attempts() -> u32 {
     5
-}
-fn default_max_attempts_per_user() -> u32 {
-    20
 }
 fn default_window() -> HumanDuration {
     HumanDuration(Duration::from_secs(300))
@@ -247,7 +241,6 @@ impl fmt::Debug for SessionConfig {
 pub struct LoginConfig {
     pub max_attempts: u32,
     pub window: Duration,
-    pub max_attempts_per_user: u32,
 }
 
 #[derive(Clone)]
@@ -527,7 +520,6 @@ impl Config {
                 login: LoginConfig {
                     max_attempts: raw.login.max_attempts,
                     window: raw.login.window.0,
-                    max_attempts_per_user: raw.login.max_attempts_per_user,
                 },
                 users,
                 access,
